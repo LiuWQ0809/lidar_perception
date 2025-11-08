@@ -1,0 +1,62 @@
+%YAML:1.0
+CameraType: kb
+#--------------------------------------------------------------------------------------------
+# Camera Parameters. Adjust them!
+#--------------------------------------------------------------------------------------------
+# Camera calibration and distortion parameters (OpenCV)
+id : 2
+name : 2
+topic: "/"
+mirror_parameters:
+  xi: 0.0
+
+distortion_parameters:
+  k1: 0.1350107771
+  k2: -0.0364319217
+  p1: 0
+  p2: 0
+  k3: -0.0005317407
+  k4: 0.0007342906
+  k5: 0
+  k6: 0
+projection_parameters:
+  fx: 507.7477967025
+  fy: 507.7895942612
+  cx: 959.4624035804
+  cy: 768.3975186714
+  # 271.56828125
+# projection_parameters:
+#   gamma1: 1120.81
+#   gamma2: 1121.99
+#   u0: 970.289
+#   # v0: 772.506
+#   v0: 543.16828125
+
+# 目前仅支持4个相机一样的配置，不一样会引发未知错误
+orign_x: 1920
+orign_y: 1080
+input_x: 960
+input_y: 768
+output_x: 960
+output_y: 768
+
+Tbc: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+  #  data: [-0.0053368, 0.0053331, -0.9999715, -0.1015,
+  #         0.9999855, 0.0007780, -0.0053328, 0,
+  #         0.0007495, -0.9999855, -0.0053372, 0,
+  #         0.0, 0.0, 0.0, 1.0]
+   data: [-0.012532  , -0.01554205, -0.99980068, -0.1015,
+          0.99985141, -0.01203112, -0.01234561, 0,
+          -0.01183684, -0.99980683,  0.01569051, 1.51,
+          0.0, 0.0, 0.0, 1.0]
+
+
+Path.front_mask: config/highlander/camera_config/mask_front.png
+
+Camera.fps: 30.0
+
+# Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
+Camera.RGB: 1

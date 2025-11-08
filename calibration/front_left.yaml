@@ -1,0 +1,57 @@
+%YAML:1.0
+CameraType: rt
+#--------------------------------------------------------------------------------------------
+# Camera Parameters. Adjust them!
+#--------------------------------------------------------------------------------------------
+# Camera calibration and distortion parameters (OpenCV)
+id : 0
+name : 0
+topic: "/"
+mirror_parameters:
+  xi: 0.0
+distortion_parameters:
+  k1: 0.8151064544
+  k2: 0.1106199879
+  p1: -0.0000008174
+  p2: -0.0000035839
+  k3: 0.0006311014
+  k4: 1.2095338665
+  k5: 0.3352840698
+  k6: 0.0129691005
+projection_parameters:
+  fx: 1016.4630069141
+  fy: 1016.4643104610
+  cx: 964.9619237508
+  cy: 771.7164174414
+  # 271.56828125
+# projection_parameters:
+#   gamma1: 1120.81
+#   gamma2: 1121.99
+#   u0: 970.289
+#   # v0: 772.506
+#   v0: 543.16828125
+
+# 目前仅支持4个相机一样的配置，不一样会引发未知错误
+orign_x: 1920
+orign_y: 1080
+input_x: 960
+input_y: 768
+output_x: 960
+output_y: 768
+
+Tbc: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: f
+   data: [0.0000000,  0.0000000,  1.0000000, 0.0974,
+            -1.0000000,  0.0000000,  0.0000000, 0.037,
+            0.0000000, -1.0000000,  0.0000000, 1.51,
+            0.0, 0.0, 0.0, 1.0]
+
+
+Path.front_mask: config/highlander/camera_config/mask_front.png
+
+Camera.fps: 30.0
+
+# Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
+Camera.RGB: 1

@@ -1,0 +1,101 @@
+# Fusion Perception Configuration
+
+# 传感器配置
+sensors:
+  camera:
+    topic: "/cr/camera/rgb/front_left_full"
+    width: 1920
+    height: 1080
+    fps: 10
+    
+  lidar:
+    topic: "/livox/lidar"
+    
+# 外参标定：Lidar到Camera的转换矩阵
+extrinsic:
+  lidar_to_camera:
+    rotation:
+      - [0.0087896171295762555, -0.99995767027190419, -0.0026622674480113479]
+      - [0.00093490604571245953, 0.0026705879971036925, -0.99999607642824218]
+      - [0.99996118533156964, 0.0087870551846044812, 0.00095834013107244957]
+    translation: [-0.205, 1.205, 0.15]  # [x, y, z] in meters
+    
+# 相机内参 (需要根据实际相机调整)
+intrinsic:
+  fx: 1000.0
+  fy: 1000.0
+  cx: 960.0
+  cy: 540.0
+  distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+
+# 感知范围 (Lidar坐标系)
+# Lidar坐标系: X前, Y左, Z上
+# 所有点云过滤都在Lidar坐标系下进行
+perception_range:
+  x_min: -5.0   # 后方5米
+  x_max: 20.0   # 前方20米
+  y_min: -5.0   # 右侧5米
+  y_max: 5.0    # 左侧5米
+  z_min: -0.1   # 地面以下0.3米
+  z_max: 1.8    # 地面以上1.8米
+
+# 模型配置
+models:
+  detector:
+    type: "yolov8"  # yolov8, yolov5
+    backend: "tensorrt"  # pytorch, onnx, tensorrt (推荐，8ms推理)
+    model_path: "models/yolov8n_fp16.engine"  # .pt, .onnx, or .engine
+    confidence_threshold: 0.5
+    iou_threshold: 0.45
+    device: "cuda"  # cuda or cpu
+    input_size: [640, 640]
+    # 感兴趣的类别 - COCO数据集类别ID
+    interested_classes: [0]  # 0=person (只检测行人)
+    # 可选: [0, 1, 2, 3, 5, 7] = person, bicycle, car, motorcycle, bus, truck
+    
+  depth_estimator:
+    type: "midas"  # midas, dpt
+    model_path: "models/midas_v21_small.pt"
+    device: "cuda"
+    
+# 跟踪配置
+tracking:
+  method: "deepsort"  # deepsort, bytetrack
+  max_age: 40  # 最大丢失帧数（从30增加到40，转弯时更宽容）
+  min_hits: 3  # 最小命中次数
+  iou_threshold: 0.3
+  max_distance: 3.5  # 最大匹配距离(米)（从2.0增加到3.5，转弯时距离变化大）
+  
+# 融合配置
+fusion:
+  depth_method: "lidar"  # lidar, monocular, hybrid
+  min_points_in_box: 5  # 3D框内最少点云数量
+  outlier_threshold: 0.5  # 离群点阈值(米)
+  use_ground_plane: true
+  
+# 发布配置
+publisher:
+  topic: "/fusion_perception/obstacles"
+  frame_id: "body"
+  publish_rate: 10  # Hz（改为10Hz，匹配输入频率）
+  visualize: false
+  viz_topic: "/fusion_perception/visualization"
+
+# 性能配置
+performance:
+  use_gpu: true
+  use_cupy: true
+  num_threads: 2  # 减少线程数以降低CPU占用
+  queue_size: 10   # 增大队列（从3增加到10，减少丢帧）
+  frame_skip: 0   # 跳帧数，0表示不跳帧
+  use_message_sync: false  # 使用消息同步器（新增）
+  sync_slop: 0.2  # 同步时间容差200ms（以lidar为主，camera容差200ms）
+  # GPU优化
+  gpu_memory_fraction: 0.8  # GPU内存使用比例
+  enable_cudnn_benchmark: true  # 启用cuDNN benchmark
+  
+# 日志配置
+logging:
+  level: "ERROR"  # DEBUG, INFO, WARNING, ERROR
+  save_log: true
+  log_dir: "logs"
