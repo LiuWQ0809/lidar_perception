@@ -3,7 +3,7 @@
 # Fusion Perception C++ - Clean Script
 # 清理脚本
 
-PROJECT_DIR="/home/nvidia/liuwq/fusion_cpp"
+PROJECT_DIR="/home/nvidia/liuwq/lidar_perception"
 
 echo "========================================"
 echo "Cleaning Build Files"

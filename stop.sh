@@ -3,7 +3,7 @@
 # Fusion Perception C++ - Stop Script
 # 停止脚本
 
-PROJECT_DIR="/home/nvidia/liuwq/fusion_cpp"
+PROJECT_DIR="/home/nvidia/liuwq/lidar_perception"
 PROCESS_NAME="fusion_perception_node"
 PID_FILE="$PROJECT_DIR/.fusion_node.pid"
 

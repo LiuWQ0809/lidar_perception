@@ -8,7 +8,7 @@ set -e  # 遇到错误立即退出
 echo "========================================"
 echo "Building Fusion Perception C++ Package"
 echo "========================================"
-cd /home/nvidia/liuwq/fusion_cpp
+cd /home/nvidia/liuwq/lidar_perception
 # 获取脚本所在目录作为项目目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
