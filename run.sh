@@ -77,4 +77,4 @@ echo "Node started with PID: $NODE_PID"
 # 保存PID到文件，方便后续管理
 echo $NODE_PID > "$PROJECT_DIR/.fusion_node.pid"
 
-wait $NODE_PID
+# wait $NODE_PID

@@ -191,10 +191,10 @@ std::vector<Detection> FusionPerceptionNode::transformCameraToBody(
         center_camera << obj.bbox_3d.center(0), obj.bbox_3d.center(1), 
                         obj.bbox_3d.center(2), 1.0f;
         
-        // 调试：打印camera坐标系下的位置
-        RCLCPP_INFO(this->get_logger(),
-                   "[TRANSFORM] Camera coords: X=%.2fm, Y=%.2fm, Z=%.2fm (纵向距离)",
-                   obj.bbox_3d.center(0), obj.bbox_3d.center(1), obj.bbox_3d.center(2));
+        // // 调试：打印camera坐标系下的位置
+        // RCLCPP_INFO(this->get_logger(),
+        //            "[TRANSFORM] Camera coords: X=%.2fm, Y=%.2fm, Z=%.2fm (纵向距离)",
+        //            obj.bbox_3d.center(0), obj.bbox_3d.center(1), obj.bbox_3d.center(2));
         
         Eigen::Vector4f center_body_homo = T_camera_to_body_ * center_camera;
         Eigen::Vector3f center_body = center_body_homo.head<3>();
