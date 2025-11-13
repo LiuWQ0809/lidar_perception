@@ -8,28 +8,6 @@
 namespace fusion_cpp {
 
 SensorFusion::SensorFusion(const YAML::Node& config) {
-    // 读取外参
-    auto extrinsic = config["extrinsic"]["lidar_to_camera"];
-    auto rotation = extrinsic["rotation"];
-    auto translation = extrinsic["translation"];
-
-    // 构建变换矩阵
-    transform_matrix_ = Eigen::Matrix4f::Identity();
-    
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 3; ++j) {
-            transform_matrix_(i, j) = rotation[i][j].as<float>();
-        }
-        transform_matrix_(i, 3) = translation[i].as<float>();
-    }
-
-    // 读取相机内参
-    auto intrinsic = config["intrinsic"];
-    fx_ = intrinsic["fx"].as<float>();
-    fy_ = intrinsic["fy"].as<float>();
-    cx_ = intrinsic["cx"].as<float>();
-    cy_ = intrinsic["cy"].as<float>();
-
     // 读取融合参数
     auto fusion_config = config["fusion"];
     min_points_in_box_ = fusion_config["min_points_in_box"].as<int>();
@@ -37,7 +15,6 @@ SensorFusion::SensorFusion(const YAML::Node& config) {
     use_ground_plane_ = fusion_config["use_ground_plane"].as<bool>();
 
     // 读取感知范围 (Lidar坐标系)
-    // Lidar坐标系: X前, Y左, Z上
     auto range = config["perception_range"];
     lidar_range_.x_min = range["x_min"].as<float>();
     lidar_range_.x_max = range["x_max"].as<float>();
@@ -47,8 +24,7 @@ SensorFusion::SensorFusion(const YAML::Node& config) {
     lidar_range_.z_max = range["z_max"].as<float>();
 
     // 设置默认尺寸 (长, 宽, 高)
-    // 行人: length=胸厚, width=肩宽, height=身高
-    default_sizes_["person"] = Eigen::Vector3f(0.22f, 0.44f, 1.68f);  // 中值: 胸厚22cm, 肩宽44cm, 身高168cm
+    default_sizes_["person"] = Eigen::Vector3f(0.22f, 0.44f, 1.68f);
     default_sizes_["bicycle"] = Eigen::Vector3f(1.8f, 0.6f, 1.3f);
     default_sizes_["car"] = Eigen::Vector3f(4.5f, 1.8f, 1.5f);
     default_sizes_["motorcycle"] = Eigen::Vector3f(2.0f, 0.8f, 1.3f);
@@ -56,10 +32,16 @@ SensorFusion::SensorFusion(const YAML::Node& config) {
     default_sizes_["truck"] = Eigen::Vector3f(7.0f, 2.3f, 2.5f);
 
     // 初始化平滑参数
-    smoothing_alpha_ = 0.6f;  // 默认60%当前帧，40%历史帧
+    smoothing_alpha_ = 0.6f;
 
-    RCLCPP_INFO(rclcpp::get_logger("SensorFusion"), 
-                "Sensor fusion module initialized");
+    RCLCPP_INFO(rclcpp::get_logger("SensorFusion"),
+                "Sensor fusion core initialized (register cameras via FusionPerceptionNode)");
+}
+
+void SensorFusion::registerCamera(const std::string& camera_id, const CameraModel& model) {
+    camera_models_[camera_id] = model;
+    RCLCPP_INFO(rclcpp::get_logger("SensorFusion"),
+                "Registered camera model: %s", camera_id.c_str());
 }
 
 Eigen::MatrixXf SensorFusion::filterPointsInLidarRange(const Eigen::MatrixXf& points_lidar) {
@@ -212,82 +194,69 @@ Eigen::MatrixXf SensorFusion::removeGroundPlane(const Eigen::MatrixXf& points) {
     return points;
 }
 
-Eigen::MatrixXf SensorFusion::transformLidarToCamera(const Eigen::MatrixXf& points_lidar) {
+Eigen::MatrixXf SensorFusion::transformLidarToCamera(
+    const Eigen::MatrixXf& points_lidar,
+    const CameraModel& model) {
     if (points_lidar.rows() == 0) {
         return Eigen::MatrixXf(0, 3);
     }
 
-    // 先在lidar坐标系下过滤范围
-    Eigen::MatrixXf filtered_points = filterPointsInLidarRange(points_lidar);
-    
-    // 移除地面点
-    filtered_points = removeGroundPlane(filtered_points);
-    
-    if (filtered_points.rows() == 0) {
-        return Eigen::MatrixXf(0, 3);
+    Eigen::MatrixXf filtered = filterPointsInLidarRange(points_lidar);
+    if (use_ground_plane_) {
+        filtered = removeGroundPlane(filtered);
+    }
+    filtered = removeOutliers(filtered);
+
+    if (filtered.rows() == 0) {
+        return filtered;
     }
 
-    // 转换为齐次坐标
-    Eigen::MatrixXf points_homo(filtered_points.rows(), 4);
-    points_homo.leftCols(3) = filtered_points;
+    Eigen::MatrixXf points_homo(filtered.rows(), 4);
+    points_homo.leftCols(3) = filtered;
     points_homo.col(3).setOnes();
 
-    // 应用变换
-    Eigen::MatrixXf points_camera = (transform_matrix_ * points_homo.transpose()).transpose();
-
+    Eigen::MatrixXf points_camera = (model.transform_matrix * points_homo.transpose()).transpose();
     return points_camera.leftCols(3);
 }
 
-void SensorFusion::projectPointsToImage(const Eigen::MatrixXf& points_camera,
-                                       Eigen::MatrixXf& image_points,
-                                       Eigen::VectorXf& depths,
-                                       std::vector<int>& valid_indices) {
-    if (points_camera.rows() == 0) {
-        image_points = Eigen::MatrixXf(0, 2);
-        depths = Eigen::VectorXf(0);
-        valid_indices.clear();
-        return;
-    }
-
-    // 过滤相机后面的点
-    std::vector<int> valid_idx_temp;
-    valid_idx_temp.reserve(points_camera.rows());
+void SensorFusion::projectPointsToImage(
+    const Eigen::MatrixXf& points_camera,
+    const CameraModel& model,
+    Eigen::MatrixXf& image_points,
+    Eigen::VectorXf& depths,
+    std::vector<int>& valid_indices) {
+    valid_indices.clear();
 
     for (int i = 0; i < points_camera.rows(); ++i) {
-        if (points_camera(i, 2) > 0) {
-            valid_idx_temp.push_back(i);
+        const float z = points_camera(i, 2);
+        if (z <= 0.1f) {
+            continue;  // 过滤在相机后方的点
         }
+
+        valid_indices.push_back(i);
     }
 
-    if (valid_idx_temp.empty()) {
-        image_points = Eigen::MatrixXf(0, 2);
-        depths = Eigen::VectorXf(0);
-        valid_indices.clear();
-        return;
-    }
+    const int count = static_cast<int>(valid_indices.size());
+    image_points = Eigen::MatrixXf(count, 2);
+    depths = Eigen::VectorXf(count);
 
-    // 投影到图像平面
-    const size_t num_valid = valid_idx_temp.size();
-    image_points.resize(num_valid, 2);
-    depths.resize(num_valid);
-    valid_indices = valid_idx_temp;
+    for (int idx = 0; idx < count; ++idx) {
+        int source_idx = valid_indices[idx];
+        const float z = points_camera(source_idx, 2);
+        const float x = points_camera(source_idx, 0) / z * model.fx + model.cx;
+        const float y = points_camera(source_idx, 1) / z * model.fy + model.cy;
 
-    for (size_t i = 0; i < num_valid; ++i) {
-        const int idx = valid_idx_temp[i];
-        const float z = points_camera(idx, 2);
-        const float x = points_camera(idx, 0) / z * fx_ + cx_;
-        const float y = points_camera(idx, 1) / z * fy_ + cy_;
-
-        image_points(i, 0) = x;
-        image_points(i, 1) = y;
-        depths(i) = z;
+        image_points(idx, 0) = x;
+        image_points(idx, 1) = y;
+        depths(idx) = z;
     }
 }
 
 Eigen::MatrixXf SensorFusion::getPointsInBBox(const Eigen::MatrixXf& points_camera,
                                               const std::vector<float>& bbox,
                                               int image_height,
-                                              int image_width) {
+                                              int image_width,
+                                              const CameraModel& model) {
     if (points_camera.rows() == 0 || bbox.size() != 4) {
         return Eigen::MatrixXf(0, 3);
     }
@@ -296,7 +265,7 @@ Eigen::MatrixXf SensorFusion::getPointsInBBox(const Eigen::MatrixXf& points_came
     Eigen::MatrixXf image_points;
     Eigen::VectorXf depths;
     std::vector<int> valid_indices;
-    projectPointsToImage(points_camera, image_points, depths, valid_indices);
+    projectPointsToImage(points_camera, model, image_points, depths, valid_indices);
 
     if (image_points.rows() == 0) {
         return Eigen::MatrixXf(0, 3);
@@ -574,60 +543,48 @@ void SensorFusion::adjustSizeByClass(float& length, float& width, float& height,
 
 bool SensorFusion::estimateFrom2DBBox(const std::vector<float>& bbox_2d,
                                      const std::string& class_name,
+                                     const CameraModel& model,
                                      BBox3D& bbox_3d) {
-    /**
-     * 纯2D框估计（当点云完全缺失时）
-     * 匹配Python版本的 _estimate_from_2d_bbox 逻辑
-     */
-    
     if (bbox_2d.size() != 4) {
         return false;
     }
-    
+
     float x1 = bbox_2d[0];
     float y1 = bbox_2d[1];
     float x2 = bbox_2d[2];
     float y2 = bbox_2d[3];
-    
-    // 简单的深度估计（根据2D框高度）
+
     float bbox_height_pixels = y2 - y1;
     float depth = 0.0f;
-    
+
+    auto depth_from_height = [&](float real_height) {
+        return (real_height * model.fy) / (bbox_height_pixels + 1e-6f);
+    };
+
     if (class_name == "person") {
-        // 假设人的实际高度约1.7米
-        float real_height = 1.7f;
-        // depth = (real_height * fy) / bbox_height_pixels
-        depth = (real_height * fy_) / (bbox_height_pixels + 1e-6f);
+        depth = depth_from_height(1.7f);
     } else if (class_name == "car") {
-        float real_height = 1.5f;
-        depth = (real_height * fy_) / (bbox_height_pixels + 1e-6f);
+        depth = depth_from_height(1.5f);
     } else if (class_name == "bicycle") {
-        float real_height = 1.2f;
-        depth = (real_height * fy_) / (bbox_height_pixels + 1e-6f);
+        depth = depth_from_height(1.2f);
     } else {
-        // 默认高度
-        float real_height = 1.5f;
-        depth = (real_height * fy_) / (bbox_height_pixels + 1e-6f);
+        depth = depth_from_height(1.5f);
     }
-    
-    // 深度范围检查
+
     if (depth < 0.5f || depth > 15.0f) {
         return false;
     }
-    
-    // 计算2D框中心在图像上的位置
+
     float u_center = (x1 + x2) / 2.0f;
     float v_center = (y1 + y2) / 2.0f;
-    
-    // 反投影到3D（camera坐标系）
-    float x = (u_center - cx_) * depth / fx_;
-    float y = (v_center - cy_) * depth / fy_;
+
+    float x = (u_center - model.cx) * depth / model.fx;
+    float y = (v_center - model.cy) * depth / model.fy;
     float z = depth;
-    
-    // 根据类别设置默认尺寸
+
     Eigen::Vector3f size;
     if (class_name == "person") {
-        size = Eigen::Vector3f(0.6f, 0.6f, 1.7f);  // [l, w, h]
+        size = Eigen::Vector3f(0.6f, 0.6f, 1.7f);
     } else if (class_name == "car") {
         size = Eigen::Vector3f(4.5f, 1.8f, 1.5f);
     } else if (class_name == "bicycle") {
@@ -635,11 +592,11 @@ bool SensorFusion::estimateFrom2DBBox(const std::vector<float>& bbox_2d,
     } else {
         size = Eigen::Vector3f(1.0f, 1.0f, 1.5f);
     }
-    
+
     bbox_3d.center = Eigen::Vector3f(x, y, z);
     bbox_3d.size = size;
-    bbox_3d.yaw = 0.0f;  // 默认朝向
-    
+    bbox_3d.yaw = 0.0f;
+
     return true;
 }
 
@@ -763,6 +720,9 @@ bool SensorFusion::estimate3DBBox(const Eigen::MatrixXf& points_3d,
 
     // 计算yaw角 (在XZ水平面，Camera坐标系)
     Eigen::Vector3f forward_vector = sorted_eigenvectors.col(forward_idx);
+    if (forward_vector(2) < 0.0f) {
+        forward_vector = -forward_vector;
+    }
     float yaw = std::atan2(forward_vector(0), forward_vector(2));
 
     // 根据类别调整尺寸
@@ -777,45 +737,43 @@ bool SensorFusion::estimate3DBBox(const Eigen::MatrixXf& points_3d,
 }
 
 std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
+    const std::string& camera_id,
     const std::vector<Detection>& detections,
     const Eigen::MatrixXf& points_lidar,
     int image_height,
     int image_width) {
-    
     std::vector<Detection> fused_detections;
 
-    // 转换点云到相机坐标系
-    Eigen::MatrixXf points_camera = transformLidarToCamera(points_lidar);
+    auto it = camera_models_.find(camera_id);
+    if (it == camera_models_.end()) {
+        RCLCPP_ERROR(rclcpp::get_logger("SensorFusion"),
+                     "Camera model not registered: %s", camera_id.c_str());
+        return fused_detections;
+    }
+    const auto& model = it->second;
 
+    Eigen::MatrixXf points_camera = transformLidarToCamera(points_lidar, model);
     if (points_camera.rows() == 0) {
-        RCLCPP_WARN(rclcpp::get_logger("SensorFusion"), 
-                    "No valid points in camera frame");
+        RCLCPP_WARN(rclcpp::get_logger("SensorFusion"),
+                    "No valid points in camera frame for %s", camera_id.c_str());
         return fused_detections;
     }
 
-    // 对每个检测框进行融合
     for (const auto& det : detections) {
         Detection fused_det = det;
 
-        // 获取框内的3D点
         Eigen::MatrixXf points_in_box = getPointsInBBox(
-            points_camera, det.bbox, image_height, image_width);
+            points_camera, det.bbox, image_height, image_width, model);
 
         if (points_in_box.rows() >= min_points_in_box_) {
-            // 点云充足，使用点云估计3D边界框
             BBox3D bbox_3d;
             if (estimate3DBBox(points_in_box, det.class_name, bbox_3d)) {
                 fused_det.bbox_3d = bbox_3d;
                 fused_detections.push_back(fused_det);
             }
         } else {
-            // 点云过少，尝试使用2D框估计（与Python版本一致）
-            RCLCPP_DEBUG(rclcpp::get_logger("SensorFusion"),
-                        "Insufficient points (%d < %d), trying 2D bbox estimation for %s",
-                        (int)points_in_box.rows(), min_points_in_box_, det.class_name.c_str());
-            
             BBox3D bbox_3d;
-            if (estimateFrom2DBBox(det.bbox, det.class_name, bbox_3d)) {
+            if (estimateFrom2DBBox(det.bbox, det.class_name, model, bbox_3d)) {
                 fused_det.bbox_3d = bbox_3d;
                 fused_detections.push_back(fused_det);
             }
@@ -824,5 +782,6 @@ std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
 
     return fused_detections;
 }
+
 
 } // namespace fusion_cpp

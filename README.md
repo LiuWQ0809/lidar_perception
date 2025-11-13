@@ -129,10 +129,28 @@ To run the node, use:
 
 ```yaml
 sensors:
-  camera:
-    topic: "/cr/camera/rgb/front_left_full"
   lidar:
     topic: "/livox/lidar"
+  cameras:
+    - name: front_left
+      topic: "/cr/camera/rgb/front_left_full"
+      encoding: "rgb8"
+      calibration: "calibration/front_left.yaml"
+      image_size: [1920, 1080]
+      projection_model: pinhole
+    - name: front_right
+      topic: "/cr/camera/rgb/front_right_full"
+      encoding: "rgb8"
+      calibration: "calibration/front_right.yaml"
+      image_size: [1920, 1080]
+      projection_model: pinhole
+    - name: left
+      topic: "/cr/camera/bgr/left_960_768"
+      encoding: "bgr8"
+      calibration: "calibration/left.yaml"
+      image_size: [960, 768]
+      projection_model: fisheye
+    # right / rear cameras omitted for brevity
 
 models:
   detector:
@@ -141,9 +159,16 @@ models:
     confidence_threshold: 0.5
 ```
 
+常用融合相关参数：
+
+- `fusion.duplicate_merge_distance`：跨相机结果在车体坐标系下的合并半径，默认 0.9 m，可根据实际车宽调整。
+- `fusion.ground_clamp_margin`：将 3D 框底面“吸附”到地面的最小距离，防止框沉入地面。
+- `fusion.person_height_range`：约束行人高度的范围，减少点云稀疏导致的高度发散。
+- `tracking.static_speed_threshold / smoothing_alpha_*`：控制静止或低速目标的输出平滑强度，减小晃动与轨迹分裂。
+
 ### 2. 标定文件
 
-确保 `calibration/front_left.yaml` 包含正确的外参标定（Tbc矩阵）。
+`calibration/` 目录下提供前左、前右、左右和后视5路相机的 `Tbc` 矩阵及内参。每个相机节点都会根据对应的 YAML 自动载入内参/畸变系数并生成去畸变映射，运行前请确认这些文件与车辆安装位置匹配，同时在 `config/fusion_config.yaml` 中填写 `extrinsic.lidar_to_body`（或提供参考相机的 `lidar_to_camera`）以生成所有相机的 `lidar→camera` 外参。
 
 ### 3. 运行节点
 
@@ -172,12 +197,19 @@ ros2 run rqt_image_view rqt_image_view /fusion_perception/visualization
 ## 话题接口
 
 ### 订阅话题
-- `/cr/camera/rgb/front_left_full` (sensor_msgs/Image) - 相机图像
+- 多路相机图像 (sensor_msgs/Image)：由 `config/fusion_config.yaml` 中 `sensors.cameras` 列表定义，例如 `/cr/camera/rgb/front_left_full`、`/cr/camera/bgr/left_960_768` 等
 - `/livox/lidar` (livox_ros_driver2/CustomMsg) - Lidar 点云
 
 ### 发布话题
 - `/fusion_perception/obstacles` (visualization_msgs/MarkerArray) - 3D 障碍物
 - `/fusion_perception/visualization` (sensor_msgs/Image) - 可视化图像（可选）
+
+
+## 多相机融合说明
+- 每路相机启动时都会根据对应的标定文件自动生成去畸变映射，YOLO 检测在去畸变后的图像上运行。
+- `SensorFusion` 为每个相机注册独立的内参/外参，先将 Livox 点云变换到相机坐标系后再进行图像投影匹配。
+- 通过 `Tbc` 将检测结果转换到车体 (body) 坐标系，`MultiObjectTracker` 在 body 坐标系内实现跨相机的 360° 稳定跟踪。
+- `config/fusion_config.yaml` 可通过 `enabled` 字段随时开启/关闭某路相机，也可以为不同分辨率设置单独的去畸变输出尺寸。
 
 ## 性能指标
 

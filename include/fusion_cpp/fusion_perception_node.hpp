@@ -21,6 +21,8 @@
 #include <memory>
 #include <vector>
 #include <deque>
+#include <unordered_map>
+#include <mutex>
 
 namespace fusion_cpp {
 
@@ -34,56 +36,59 @@ public:
     ~FusionPerceptionNode() = default;
 
 private:
-    /**
-     * @brief 加载配置文件
-     * @param config_path 配置文件路径
-     */
-    void loadConfig(const std::string& config_path);
-
-    /**
-     * @brief 加载camera到body的坐标系转换
-     * @param project_root 项目根目录
-     */
-    void loadCameraToBodyTransform(const std::string& project_root);
-
-    /**
-     * @brief 将跟踪目标从camera坐标系转换到body坐标系
-     * @param tracked_objects 输入的跟踪对象
-     * @return 转换后的对象
-     */
-    std::vector<Detection> transformCameraToBody(
-        const std::vector<Detection>& tracked_objects);
-
-    /**
-     * @brief 相机回调
-     */
-    void cameraCallback(const sensor_msgs::msg::Image::SharedPtr msg);
-
-    /**
-     * @brief Lidar驱动回调
-     */
-    void lidarDrivenCallback(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
-
-    /**
-     * @brief 发布障碍物标记
-     */
-    void publishObstacles(const std::vector<Detection>& tracked_objects);
-
-    /**
-     * @brief 可视化检测结果
-     */
-    cv::Mat visualizeResults(const cv::Mat& image,
-                            const std::vector<Detection>& detections_2d,
-                            const std::vector<Detection>& tracked_objects);
-
-    /**
-     * @brief 创建边界框标记
-     */
-    visualization_msgs::msg::Marker createBBoxMarker(
-        const Detection& obj, int id, const std::string& frame_id);
+    struct CameraContext {
+        std::string name;
+        std::string topic;
+        std::string encoding;
+        cv::Size image_size;
+        cv::Size calibration_size;
+        cv::Size undistort_size;
+        cv::Size processed_size;
+        bool enabled{true};
+        bool is_fisheye{false};
+        cv::Mat camera_matrix;
+        cv::Mat dist_coeffs;
+        cv::Mat undistort_map1;
+        cv::Mat undistort_map2;
+        Eigen::Matrix4f T_camera_to_body = Eigen::Matrix4f::Identity();
+        Eigen::Matrix4f T_body_to_camera = Eigen::Matrix4f::Identity();
+        Eigen::Matrix4f T_lidar_to_camera = Eigen::Matrix4f::Identity();
+        rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscriber;
+        cv::Mat latest_image;
+        rclcpp::Time image_timestamp;
+        bool has_image{false};
+        std::mutex mutex;
+    };
 
 private:
-    // 配置
+    void loadConfig(const std::string& config_path);
+    void loadExtrinsic();
+    void initializeCameras(const std::string& project_root, int queue_size);
+    bool loadCalibrationFile(const std::string& calib_path, CameraContext& camera);
+
+    Detection transformDetectionToBody(const Detection& detection,
+                                       const Eigen::Matrix4f& T_camera_to_body);
+
+    void cameraCallback(const std::string& camera_id,
+                        const sensor_msgs::msg::Image::SharedPtr msg);
+    void lidarDrivenCallback(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
+
+    bool getLatestCameraFrame(const std::shared_ptr<CameraContext>& camera,
+                              cv::Mat& image,
+                              rclcpp::Time& timestamp);
+
+    cv::Mat undistortImage(const cv::Mat& image, CameraContext& camera);
+
+    void publishObstacles(const std::vector<Detection>& tracked_objects);
+    cv::Mat visualizeResults(const cv::Mat& image,
+                             const std::vector<Detection>& detections_2d,
+                             const std::vector<Detection>& tracked_objects);
+    visualization_msgs::msg::Marker createBBoxMarker(
+        const Detection& obj, int id, const std::string& frame_id);
+    void enforceGroundConstraint(Detection& det) const;
+    std::vector<Detection> suppressDuplicates(const std::vector<Detection>& detections);
+
+private:
     YAML::Node config_;
 
     // 模块
@@ -95,13 +100,21 @@ private:
     std::unique_ptr<TensorRTDetector> detector_;
 #endif
 
-    // 坐标转换矩阵 (camera to body)
-    Eigen::Matrix4f T_camera_to_body_;
+    // 坐标转换
+    Eigen::Matrix4f T_lidar_to_body_ = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f T_body_to_lidar_ = Eigen::Matrix4f::Identity();
+    bool has_fallback_extrinsic_ = false;
+    Eigen::Matrix4f fallback_lidar_to_camera_ = Eigen::Matrix4f::Identity();
+    std::string fallback_camera_name_ = "front_left";
+    float ground_level_z_;
+    float ground_clamp_margin_;
+    float min_person_height_;
+    float max_person_height_;
+    float duplicate_merge_distance_;
 
-    // 数据缓存
-    cv::Mat latest_image_;
-    rclcpp::Time image_timestamp_;
-    
+    std::unordered_map<std::string, std::shared_ptr<CameraContext>> cameras_;
+    std::vector<std::string> camera_order_;
+
     // 跳帧计数
     int frame_skip_;
     int frame_counter_;
@@ -115,9 +128,7 @@ private:
     double max_time_diff_;
 
     // ROS订阅和发布
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr camera_sub_;
     rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_sub_;
-    
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr viz_pub_;
 };

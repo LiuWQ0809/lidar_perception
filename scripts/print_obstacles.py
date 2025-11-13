@@ -55,7 +55,7 @@ class ObstaclePrinter(Node):
             pos_z = marker.pose.position.z
             
             # 从其他marker中查找对应的文本标签获取类别
-            class_name = "unknown"
+            class_name = "person"
             for m in msg.markers:
                 if m.ns == "labels" and m.id == (obj_id + 10000):
                     # 文本格式: "ID:139 person"

@@ -5,6 +5,7 @@
 #include <vector>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <yaml-cpp/yaml.h>
 
 namespace fusion_cpp {
@@ -33,6 +34,7 @@ struct Detection {
     int class_id;
     std::string class_name;
     BBox3D bbox_3d;
+    std::string camera_id;  // 来源相机
     
     Detection() : confidence(0.0f), class_id(-1) {}
 };
@@ -52,6 +54,14 @@ struct PerceptionRange {
  */
 class SensorFusion {
 public:
+    struct CameraModel {
+        Eigen::Matrix4f transform_matrix;  // lidar -> camera
+        float fx;
+        float fy;
+        float cx;
+        float cy;
+    };
+
     /**
      * @brief 构造函数
      * @param config YAML配置
@@ -60,20 +70,29 @@ public:
     ~SensorFusion() = default;
 
     /**
+     * @brief 注册相机模型（外参+内参）
+     */
+    void registerCamera(const std::string& camera_id, const CameraModel& model);
+
+    /**
      * @brief 将Lidar点云从lidar坐标系转换到camera坐标系
      * @param points_lidar 输入点云 (N x 3)
+     * @param model 相机模型
      * @return 转换后的点云 (M x 3)，可能经过感知范围过滤
      */
-    Eigen::MatrixXf transformLidarToCamera(const Eigen::MatrixXf& points_lidar);
+    Eigen::MatrixXf transformLidarToCamera(const Eigen::MatrixXf& points_lidar,
+                                           const CameraModel& model);
 
     /**
      * @brief 将相机坐标系的3D点投影到图像平面
      * @param points_camera 相机坐标系点云 (N x 3)
+     * @param model 相机模型
      * @param[out] image_points 投影后的图像坐标 (M x 2)
      * @param[out] depths 深度值 (M)
      * @param[out] valid_indices 有效点的原始索引 (M)
      */
     void projectPointsToImage(const Eigen::MatrixXf& points_camera,
+                             const CameraModel& model,
                              Eigen::MatrixXf& image_points,
                              Eigen::VectorXf& depths,
                              std::vector<int>& valid_indices);
@@ -89,7 +108,8 @@ public:
     Eigen::MatrixXf getPointsInBBox(const Eigen::MatrixXf& points_camera,
                                     const std::vector<float>& bbox,
                                     int image_height,
-                                    int image_width);
+                                    int image_width,
+                                    const CameraModel& model);
 
     /**
      * @brief 基于3D点云估计3D边界框
@@ -111,10 +131,12 @@ public:
      */
     bool estimateFrom2DBBox(const std::vector<float>& bbox_2d,
                            const std::string& class_name,
+                           const CameraModel& model,
                            BBox3D& bbox_3d);
 
     /**
      * @brief 融合多个检测结果与点云数据
+     * @param camera_id 相机ID
      * @param detections 2D检测结果列表
      * @param points_lidar Lidar点云 (N x 3)
      * @param image_height 图像高度
@@ -122,6 +144,7 @@ public:
      * @return 融合后的检测结果列表（包含3D信息）
      */
     std::vector<Detection> fuseDetectionsWithLidar(
+        const std::string& camera_id,
         const std::vector<Detection>& detections,
         const Eigen::MatrixXf& points_lidar,
         int image_height,
@@ -169,11 +192,8 @@ private:
                                           int min_cluster_size = 5);
 
 private:
-    // 外参：lidar到camera的变换矩阵 (4x4)
-    Eigen::Matrix4f transform_matrix_;
-
-    // 相机内参
-    float fx_, fy_, cx_, cy_;
+    // 已注册的相机模型
+    std::unordered_map<std::string, CameraModel> camera_models_;
 
     // 融合参数
     int min_points_in_box_;

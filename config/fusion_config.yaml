@@ -1,32 +1,69 @@
-# Fusion Perception Configuration
+# Fusion Perception Configuration (multi-camera + LiDAR)
 
 # 传感器配置
 sensors:
-  camera:
-    topic: "/cr/camera/rgb/front_left_full"
-    width: 1920
-    height: 1080
-    fps: 10
-    
   lidar:
     topic: "/livox/lidar"
-    
-# 外参标定：Lidar到Camera的转换矩阵
+
+  cameras:
+    - name: "front_left"
+      topic: "/cr/camera/rgb/front_left_full"
+      encoding: "rgb8"
+      image_size: [1920, 1080]
+      calibration: "calibration/front_left.yaml"
+      calibration_size: [1920, 1080]
+      undistort_size: [1920, 1080]
+      projection_model: "pinhole"
+      enabled: true
+
+    - name: "front_right"
+      topic: "/cr/camera/rgb/front_right_full"
+      encoding: "rgb8"
+      image_size: [1920, 1080]
+      calibration: "calibration/front_right.yaml"
+      calibration_size: [1920, 1080]
+      undistort_size: [1920, 1080]
+      projection_model: "pinhole"
+      enabled: true
+
+    - name: "left"
+      topic: "/cr/camera/bgr/left_960_768"
+      encoding: "bgr8"
+      image_size: [960, 768]
+      calibration: "calibration/left.yaml"
+      calibration_size: [1920, 1080]
+      undistort_size: [960, 768]
+      projection_model: "fisheye"
+      enabled: true
+
+    - name: "right"
+      topic: "/cr/camera/bgr/right_960_768"
+      encoding: "bgr8"
+      image_size: [960, 768]
+      calibration: "calibration/right.yaml"
+      calibration_size: [1920, 1080]
+      undistort_size: [960, 768]
+      projection_model: "fisheye"
+      enabled: true
+
+    - name: "rear"
+      topic: "/cr/camera/bgr/rear_960_768"
+      encoding: "bgr8"
+      image_size: [960, 768]
+      calibration: "calibration/rear.yaml"
+      calibration_size: [1920, 1080]
+      undistort_size: [960, 768]
+      projection_model: "fisheye"
+      enabled: true
+
+# 外参标定：Lidar到Body的转换矩阵 (Body坐标系: X前, Y左, Z上)
 extrinsic:
-  lidar_to_camera:
+  lidar_to_body:
     rotation:
-      - [0.0087896171295762555, -0.99995767027190419, -0.0026622674480113479]
-      - [0.00093490604571245953, 0.0026705879971036925, -0.99999607642824218]
-      - [0.99996118533156964, 0.0087870551846044812, 0.00095834013107244957]
-    translation: [-0.205, 1.205, 0.15]  # [x, y, z] in meters
-    
-# 相机内参 (需要根据实际相机调整)
-intrinsic:
-  fx: 1000.0
-  fy: 1000.0
-  cx: 960.0
-  cy: 540.0
-  distortion: [0.0, 0.0, 0.0, 0.0, 0.0]
+      - [0.9999611853315696, 0.008787055184604481, 0.0009583401310724496]
+      - [-0.008789617129576255, 0.9999576702719042, 0.002662267448011348]
+      - [-0.0009349060457124595, -0.0026705879971036925, 0.9999960764282421]
+    translation: [0.2474, 0.2420, 0.3050]  # [x, y, z] in meters (lidar origin wrt body)
 
 # 感知范围 (Lidar坐标系)
 # Lidar坐标系: X前, Y左, Z上
@@ -65,6 +102,9 @@ tracking:
   min_hits: 3  # 最小命中次数
   iou_threshold: 0.3
   max_distance: 3.5  # 最大匹配距离(米)（从2.0增加到3.5，转弯时距离变化大）
+  static_speed_threshold: 0.3  # 低速判定阈值(米/秒)
+  smoothing_alpha_static: 0.2  # 静止目标平滑系数
+  smoothing_alpha_dynamic: 0.6  # 运动目标平滑系数
   
 # 融合配置
 fusion:
@@ -72,6 +112,9 @@ fusion:
   min_points_in_box: 5  # 3D框内最少点云数量
   outlier_threshold: 0.5  # 离群点阈值(米)
   use_ground_plane: true
+  duplicate_merge_distance: 0.9  # 跨相机结果合并阈值(米)
+  ground_clamp_margin: 0.02      # 防止框沉入地面（米）
+  person_height_range: [1.45, 1.85]  # 行人高度约束范围(米)
   
 # 发布配置
 publisher:

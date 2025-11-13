@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <cmath>
+#include <unordered_set>
 
 namespace fusion_cpp {
 
@@ -168,6 +169,7 @@ Detection Track::getState() const {
     state.class_id = class_id;
     state.confidence = last_detection.confidence;
     state.bbox = last_detection.bbox;
+    state.camera_id = last_detection.camera_id;
     
     return state;
 }
@@ -184,6 +186,15 @@ MultiObjectTracker::MultiObjectTracker(const YAML::Node& config)
     min_hits_ = tracking_config["min_hits"].as<int>();
     iou_threshold_ = tracking_config["iou_threshold"].as<float>();
     max_distance_ = tracking_config["max_distance"].as<float>();
+    static_speed_thresh_ = tracking_config["static_speed_threshold"]
+        ? tracking_config["static_speed_threshold"].as<float>()
+        : 0.3f;
+    smoothing_alpha_static_ = tracking_config["smoothing_alpha_static"]
+        ? tracking_config["smoothing_alpha_static"].as<float>()
+        : 0.2f;
+    smoothing_alpha_dynamic_ = tracking_config["smoothing_alpha_dynamic"]
+        ? tracking_config["smoothing_alpha_dynamic"].as<float>()
+        : 0.6f;
 
     RCLCPP_INFO(rclcpp::get_logger("MultiObjectTracker"), 
                 "Multi-object tracker initialized");
@@ -215,6 +226,9 @@ std::vector<Detection> MultiObjectTracker::update(
             tracks_[trk_idx]->update(detections_3d[det_idx]);
         }
 
+        // 对未匹配对尝试恢复，避免分裂
+        recoverUnmatched(detections_3d, unmatched_dets, unmatched_trks);
+
         // 创建新跟踪
         for (int det_idx : unmatched_dets) {
             auto new_track = std::make_shared<Track>(
@@ -227,7 +241,11 @@ std::vector<Detection> MultiObjectTracker::update(
     tracks_.erase(
         std::remove_if(tracks_.begin(), tracks_.end(),
             [this](const std::shared_ptr<Track>& t) {
-                return t->time_since_update >= max_age_;
+                if (t->time_since_update >= max_age_) {
+                    last_smoothed_states_.erase(t->track_id);
+                    return true;
+                }
+                return false;
             }),
         tracks_.end()
     );
@@ -236,7 +254,8 @@ std::vector<Detection> MultiObjectTracker::update(
     std::vector<Detection> tracked_objects;
     for (const auto& track : tracks_) {
         if (track->hits >= min_hits_ || frame_count_ <= min_hits_) {
-            tracked_objects.push_back(track->getState());
+            Detection raw_state = track->getState();
+            tracked_objects.push_back(smoothTrackedState(track, raw_state));
         }
     }
 
@@ -336,11 +355,17 @@ float MultiObjectTracker::calculateDistance(const Detection& detection,
     float avg_size = (det_size.norm() + trk_size.norm()) / 2.0f;
     float size_penalty = (avg_size > 0.1f) ? (size_diff / avg_size) : 0.0f;
     
+    // 朝向差异
+    float trk_yaw = track.kf_.x(9);
+    float yaw_diff = std::atan2(std::sin(detection.bbox_3d.yaw - trk_yaw),
+                                std::cos(detection.bbox_3d.yaw - trk_yaw));
+    float yaw_penalty = std::abs(yaw_diff) * 0.5f;
+
     // 类别一致性
     float class_penalty = (detection.class_name == track.class_name) ? 0.0f : 5.0f;
     
-    // 综合代价：位置 + 尺寸差异 + 类别惩罚
-    return pos_distance + size_penalty * 0.5f + class_penalty;
+    // 综合代价：位置 + 尺寸差异 + 方向 + 类别惩罚
+    return pos_distance + size_penalty * 0.5f + yaw_penalty + class_penalty;
 }
 
 void MultiObjectTracker::hungarianAlgorithm(const Eigen::MatrixXf& cost_matrix,
@@ -373,10 +398,81 @@ void MultiObjectTracker::hungarianAlgorithm(const Eigen::MatrixXf& cost_matrix,
     }
 }
 
+void MultiObjectTracker::recoverUnmatched(const std::vector<Detection>& detections,
+                                          std::vector<int>& unmatched_dets,
+                                          std::vector<int>& unmatched_trks) {
+    if (unmatched_dets.empty() || unmatched_trks.empty()) {
+        return;
+    }
+
+    std::vector<int> remaining_dets;
+    std::unordered_set<int> recovered_tracks;
+
+    for (int det_idx : unmatched_dets) {
+        float best_dist = max_distance_ * 1.5f;
+        int best_track = -1;
+        for (int trk_idx : unmatched_trks) {
+            if (recovered_tracks.count(trk_idx)) {
+                continue;
+            }
+            const auto& track = tracks_[trk_idx];
+            Eigen::Vector3f track_center(track->kf_.x(0), track->kf_.x(1), track->kf_.x(2));
+            float dist = (detections[det_idx].bbox_3d.center - track_center).norm();
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_track = trk_idx;
+            }
+        }
+
+        if (best_track >= 0) {
+            tracks_[best_track]->update(detections[det_idx]);
+            recovered_tracks.insert(best_track);
+        } else {
+            remaining_dets.push_back(det_idx);
+        }
+    }
+
+    std::vector<int> remaining_trks;
+    for (int trk_idx : unmatched_trks) {
+        if (!recovered_tracks.count(trk_idx)) {
+            remaining_trks.push_back(trk_idx);
+        }
+    }
+
+    unmatched_dets.swap(remaining_dets);
+    unmatched_trks.swap(remaining_trks);
+}
+
+Detection MultiObjectTracker::smoothTrackedState(const std::shared_ptr<Track>& track,
+                                                 const Detection& raw_state) {
+    Detection smoothed = raw_state;
+    float planar_speed = raw_state.bbox_3d.velocity.head<2>().norm();
+    float alpha = (planar_speed < static_speed_thresh_)
+        ? smoothing_alpha_static_ : smoothing_alpha_dynamic_;
+    alpha = std::clamp(alpha, 0.05f, 0.95f);
+
+    auto it = last_smoothed_states_.find(track->track_id);
+    if (it != last_smoothed_states_.end()) {
+        const auto& prev = it->second;
+        smoothed.bbox_3d.center = alpha * raw_state.bbox_3d.center +
+                                  (1.0f - alpha) * prev.bbox_3d.center;
+        smoothed.bbox_3d.size = alpha * raw_state.bbox_3d.size +
+                                (1.0f - alpha) * prev.bbox_3d.size;
+        float yaw_diff = std::atan2(std::sin(raw_state.bbox_3d.yaw - prev.bbox_3d.yaw),
+                                    std::cos(raw_state.bbox_3d.yaw - prev.bbox_3d.yaw));
+        smoothed.bbox_3d.yaw = prev.bbox_3d.yaw + alpha * yaw_diff;
+        smoothed.bbox_3d.velocity = (smoothed.bbox_3d.center - prev.bbox_3d.center) * 10.0f;
+    }
+
+    last_smoothed_states_[track->track_id] = smoothed;
+    return smoothed;
+}
+
 void MultiObjectTracker::reset() {
     tracks_.clear();
     frame_count_ = 0;
     next_track_id_ = 1;
+    last_smoothed_states_.clear();
     RCLCPP_INFO(rclcpp::get_logger("MultiObjectTracker"), "Tracker reset");
 }
 
