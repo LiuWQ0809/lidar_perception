@@ -23,6 +23,8 @@
 #include <deque>
 #include <unordered_map>
 #include <mutex>
+#include <future>
+#include <atomic>
 
 namespace fusion_cpp {
 
@@ -54,7 +56,7 @@ private:
         Eigen::Matrix4f T_body_to_camera = Eigen::Matrix4f::Identity();
         Eigen::Matrix4f T_lidar_to_camera = Eigen::Matrix4f::Identity();
         rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr subscriber;
-        cv::Mat latest_image;
+        sensor_msgs::msg::Image::SharedPtr latest_msg; // 存储原始消息指针，避免回调中处理
         rclcpp::Time image_timestamp;
         bool has_image{false};
         std::mutex mutex;
@@ -98,6 +100,7 @@ private:
 
 #ifdef USE_TENSORRT
     std::unique_ptr<TensorRTDetector> detector_;
+    std::mutex detector_mutex_;
 #endif
 
     // 坐标转换

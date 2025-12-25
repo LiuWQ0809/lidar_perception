@@ -23,7 +23,15 @@ public:
      */
     Eigen::MatrixXf parsePointCloud2(const sensor_msgs::msg::PointCloud2::SharedPtr& msg);
 
+    /**
+     * @brief 设置降采样比例
+     * @param ratio 降采样比例 (1表示不降采样, 2表示每2个点取1个)
+     */
+    void setDownsampleRatio(int ratio) { downsample_ratio_ = std::max(1, ratio); }
+
 private:
+    int downsample_ratio_{1};
+
     /**
      * @brief 检查点是否有效
      * @param x, y, z 点坐标

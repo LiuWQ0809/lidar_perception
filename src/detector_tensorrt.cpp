@@ -251,32 +251,38 @@ std::vector<Detection> TensorRTDetector::postprocess(
     // 即 output[0 * 84 * 8400 + c * 8400 + i] 对应第i个检测框的第c个通道
     
     for (int i = 0; i < output_size_; ++i) {
-        // 正确的访问方式：output[channel * output_size + detection_idx]
+        // 获取类别和置信度
+        float max_conf = 0.0f;
+        int max_class_id = -1;
+        
+        if (!interested_classes_.empty()) {
+            // 优化：只检查感兴趣的类别
+            for (int c_id : interested_classes_) {
+                if (c_id < 0 || c_id >= 80) continue;
+                const float conf = output[(4 + c_id) * output_size_ + i];
+                if (conf > max_conf) {
+                    max_conf = conf;
+                    max_class_id = c_id;
+                }
+            }
+        } else {
+            // 检查所有类别
+            for (int c = 0; c < 80; ++c) {
+                const float conf = output[(4 + c) * output_size_ + i];
+                if (conf > max_conf) {
+                    max_conf = conf;
+                    max_class_id = c;
+                }
+            }
+        }
+
+        // 过滤低置信度
+        if (max_conf < conf_threshold_ || max_class_id == -1) continue;
+
         const float cx = output[0 * output_size_ + i];
         const float cy = output[1 * output_size_ + i];
         const float w = output[2 * output_size_ + i];
         const float h = output[3 * output_size_ + i];
-
-        // 获取类别和置信度
-        float max_conf = 0.0f;
-        int max_class_id = 0;
-        
-        for (int c = 0; c < 80; ++c) {
-            const float conf = output[(4 + c) * output_size_ + i];
-            if (conf > max_conf) {
-                max_conf = conf;
-                max_class_id = c;
-            }
-        }
-
-        // 过滤低置信度和不感兴趣的类别
-        if (max_conf < conf_threshold_) continue;
-        
-        if (!interested_classes_.empty() &&
-            std::find(interested_classes_.begin(), interested_classes_.end(), 
-                     max_class_id) == interested_classes_.end()) {
-            continue;
-        }
 
         // 转换坐标到原始图像
         const float x1 = (cx - w / 2.0f) / scale_;

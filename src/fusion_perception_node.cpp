@@ -93,6 +93,11 @@ FusionPerceptionNode::FusionPerceptionNode()
     }
 
     livox_parser_ = std::make_unique<LivoxParser>();
+    int lidar_downsample = config_["performance"]["lidar_downsample"] 
+        ? config_["performance"]["lidar_downsample"].as<int>() 
+        : 2;
+    livox_parser_->setDownsampleRatio(lidar_downsample);
+    
     fusion_ = std::make_unique<SensorFusion>(config_);
     tracker_ = std::make_unique<MultiObjectTracker>(config_);
 
@@ -391,20 +396,39 @@ cv::Mat FusionPerceptionNode::undistortImage(const cv::Mat& image, CameraContext
         return image.clone();
     }
     cv::Mat result;
-    cv::remap(image, result, camera.undistort_map1, camera.undistort_map2, cv::INTER_LINEAR);
+    // 优化：使用 INTER_NEAREST 替代 INTER_LINEAR，大幅降低CPU占用，对检测精度影响极小
+    cv::remap(image, result, camera.undistort_map1, camera.undistort_map2, cv::INTER_NEAREST);
     return result;
 }
 
 bool FusionPerceptionNode::getLatestCameraFrame(const std::shared_ptr<CameraContext>& camera,
                                                 cv::Mat& image,
                                                 rclcpp::Time& timestamp) {
-    std::lock_guard<std::mutex> lock(camera->mutex);
-    if (!camera->has_image || camera->latest_image.empty()) {
+    sensor_msgs::msg::Image::SharedPtr msg;
+    {
+        std::lock_guard<std::mutex> lock(camera->mutex);
+        if (!camera->has_image || !camera->latest_msg) {
+            return false;
+        }
+        msg = camera->latest_msg;
+        timestamp = camera->image_timestamp;
+    }
+
+    try {
+        // 在这里才进行转换和缩放
+        auto cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
+        cv::Mat raw_img = cv_ptr->image;
+        
+        if (raw_img.cols != camera->image_size.width || raw_img.rows != camera->image_size.height) {
+            cv::resize(raw_img, image, camera->image_size);
+        } else {
+            image = raw_img; // 浅拷贝
+        }
+        return true;
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Frame conversion error: %s", e.what());
         return false;
     }
-    camera->latest_image.copyTo(image);
-    timestamp = camera->image_timestamp;
-    return true;
 }
 
 Detection FusionPerceptionNode::transformDetectionToBody(
@@ -523,22 +547,11 @@ void FusionPerceptionNode::cameraCallback(
     }
     auto& camera = it->second;
 
-    try {
-        auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
-        cv::Mat image = cv_ptr->image;
-        if (image.cols != camera->image_size.width || image.rows != camera->image_size.height) {
-            cv::resize(image, image, camera->image_size);
-        }
-        cv::Mat undistorted = undistortImage(image, *camera);
-        {
-            std::lock_guard<std::mutex> lock(camera->mutex);
-            camera->latest_image = undistorted;
-            camera->image_timestamp = msg->header.stamp;
-            camera->has_image = true;
-        }
-    } catch (const std::exception& e) {
-        RCLCPP_ERROR(this->get_logger(), "Camera %s callback error: %s",
-                     camera_id.c_str(), e.what());
+    {
+        std::lock_guard<std::mutex> lock(camera->mutex);
+        camera->latest_msg = msg; // 只存储指针，不进行任何处理
+        camera->image_timestamp = msg->header.stamp;
+        camera->has_image = true;
     }
 }
 
@@ -558,58 +571,84 @@ void FusionPerceptionNode::lidarDrivenCallback(
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    Eigen::MatrixXf points = livox_parser_->parsePointCloud2(lidar_msg);
+    // 1. 解析并全局预处理点云（只做一次）
+    Eigen::MatrixXf raw_points = livox_parser_->parsePointCloud2(lidar_msg);
+    Eigen::MatrixXf preprocessed_points = fusion_->preprocessPointCloud(raw_points);
+    
     std::vector<Detection> detections_body;
-    bool any_camera_ready = false;
+    std::mutex detections_mutex;
+    std::vector<std::future<void>> futures;
+    std::atomic<bool> any_camera_ready{false};
 
     for (const auto& name : camera_order_) {
-        auto camera_it = cameras_.find(name);
-        if (camera_it == cameras_.end()) {
-            continue;
-        }
-        auto& camera = camera_it->second;
+        futures.push_back(std::async(std::launch::async, [&, name]() {
+            auto camera_it = cameras_.find(name);
+            if (camera_it == cameras_.end()) {
+                return;
+            }
+            auto& camera = camera_it->second;
 
-        cv::Mat image;
-        rclcpp::Time image_stamp;
-        if (!getLatestCameraFrame(camera, image, image_stamp)) {
-            continue;
-        }
+            cv::Mat raw_image;
+            rclcpp::Time image_stamp;
+            if (!getLatestCameraFrame(camera, raw_image, image_stamp)) {
+                return;
+            }
 
-        double image_time = image_stamp.seconds();
-        double time_diff = std::abs(lidar_time - image_time);
-        if (check_time_diff_ && time_diff > max_time_diff_) {
-            continue;
-        }
-        any_camera_ready = true;
+            double image_time = image_stamp.seconds();
+            double time_diff = std::abs(lidar_time - image_time);
+            if (check_time_diff_ && time_diff > max_time_diff_) {
+                return;
+            }
+            any_camera_ready = true;
 
-        std::vector<Detection> detections_2d;
+            // 2. 延迟去畸变：只有确定要处理这一帧时才去畸变
+            cv::Mat image = undistortImage(raw_image, *camera);
+
+            std::vector<Detection> detections_2d;
 #ifdef USE_TENSORRT
-        detections_2d = detector_->detect(image);
+            {
+                // TensorRT 推理需要互斥访问
+                std::lock_guard<std::mutex> lock(detector_mutex_);
+                detections_2d = detector_->detect(image);
+            }
 #endif
-        if (detections_2d.empty()) {
-            continue;
-        }
-        for (auto& det : detections_2d) {
-            det.camera_id = name;
-        }
+            if (detections_2d.empty()) {
+                return;
+            }
+            for (auto& det : detections_2d) {
+                det.camera_id = name;
+            }
 
-        std::vector<Detection> detections_3d = fusion_->fuseDetectionsWithLidar(
-            name, detections_2d, points, image.rows, image.cols);
+            // 3. 使用预处理后的点云进行融合
+            std::vector<Detection> detections_3d = fusion_->fuseDetectionsWithLidar(
+                name, detections_2d, preprocessed_points, image.rows, image.cols);
 
-        for (auto& det3d : detections_3d) {
-            det3d.camera_id = name;
-            auto det_body = transformDetectionToBody(det3d, camera->T_camera_to_body);
-            enforceGroundConstraint(det_body);
-            detections_body.push_back(det_body);
-        }
+            std::vector<Detection> local_detections_body;
+            for (auto& det3d : detections_3d) {
+                det3d.camera_id = name;
+                auto det_body = transformDetectionToBody(det3d, camera->T_camera_to_body);
+                enforceGroundConstraint(det_body);
+                local_detections_body.push_back(det_body);
+            }
 
-        if (viz_pub_ && !detections_2d.empty()) {
-            cv::Mat viz_image = visualizeResults(image.clone(), detections_2d, detections_body);
-            auto viz_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", viz_image).toImageMsg();
-            viz_msg->header.stamp = image_stamp;
-            viz_msg->header.frame_id = name;
-            viz_pub_->publish(*viz_msg);
-        }
+            {
+                std::lock_guard<std::mutex> lock(detections_mutex);
+                detections_body.insert(detections_body.end(), local_detections_body.begin(), local_detections_body.end());
+            }
+
+            if (viz_pub_ && !detections_2d.empty()) {
+                cv::Mat viz_image = visualizeResults(image, detections_2d, local_detections_body);
+                auto viz_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", viz_image).toImageMsg();
+                viz_msg->header.stamp = image_stamp;
+                viz_msg->header.frame_id = name;
+                viz_pub_->publish(*viz_msg);
+            }
+        }));
+    }
+
+    // 等待所有相机处理完成
+    for (auto& f : futures) {
+        f.get();
     }
 
     if (!any_camera_ready) {
@@ -670,7 +709,7 @@ cv::Mat FusionPerceptionNode::visualizeResults(
     const cv::Mat& image,
     const std::vector<Detection>& detections_2d,
     const std::vector<Detection>& tracked_objects) {
-    cv::Mat vis = image.clone();
+    cv::Mat vis = image; // 不再使用 clone()，直接在原图（去畸变后的局部副本）上绘制
 #ifdef USE_TENSORRT
     vis = detector_->visualize(vis, detections_2d);
 #endif
@@ -725,7 +764,12 @@ visualization_msgs::msg::Marker FusionPerceptionNode::createBBoxMarker(
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<fusion_cpp::FusionPerceptionNode>();
-    rclcpp::spin(node);
+    
+    // 使用多线程执行器以充分利用多核CPU
+    rclcpp::executors::MultiThreadedExecutor executor;
+    executor.add_node(node);
+    executor.spin();
+    
     rclcpp::shutdown();
     return 0;
 }

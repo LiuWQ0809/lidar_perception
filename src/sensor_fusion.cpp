@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <ctime>  // for std::time in RANSAC
+#include <random>
 
 namespace fusion_cpp {
 
@@ -13,6 +14,7 @@ SensorFusion::SensorFusion(const YAML::Node& config) {
     min_points_in_box_ = fusion_config["min_points_in_box"].as<int>();
     outlier_threshold_ = fusion_config["outlier_threshold"].as<float>();
     use_ground_plane_ = fusion_config["use_ground_plane"].as<bool>();
+    voxel_size_ = fusion_config["voxel_size"] ? fusion_config["voxel_size"].as<float>() : 0.1f;
 
     // 读取感知范围 (Lidar坐标系)
     auto range = config["perception_range"];
@@ -49,133 +51,95 @@ Eigen::MatrixXf SensorFusion::filterPointsInLidarRange(const Eigen::MatrixXf& po
         return points_lidar;
     }
 
-    std::vector<int> valid_indices;
-    valid_indices.reserve(points_lidar.rows());
+    // 使用Eigen向量化操作进行范围过滤
+    Eigen::Array<bool, Eigen::Dynamic, 1> mask = 
+        (points_lidar.col(0).array() >= lidar_range_.x_min) && 
+        (points_lidar.col(0).array() <= lidar_range_.x_max) &&
+        (points_lidar.col(1).array() >= lidar_range_.y_min) && 
+        (points_lidar.col(1).array() <= lidar_range_.y_max) &&
+        (points_lidar.col(2).array() >= lidar_range_.z_min) && 
+        (points_lidar.col(2).array() <= lidar_range_.z_max);
 
-    for (int i = 0; i < points_lidar.rows(); ++i) {
-        const float x = points_lidar(i, 0);
-        const float y = points_lidar(i, 1);
-        const float z = points_lidar(i, 2);
-
-        // 所有维度使用统一的lidar_range_参数（来自YAML配置）
-        if (x >= lidar_range_.x_min && x <= lidar_range_.x_max &&
-            y >= lidar_range_.y_min && y <= lidar_range_.y_max &&
-            z >= lidar_range_.z_min && z <= lidar_range_.z_max) {
-            valid_indices.push_back(i);
-        }
-    }
-
-    if (valid_indices.empty()) {
+    int valid_count = mask.count();
+    if (valid_count == 0) {
         return Eigen::MatrixXf(0, 3);
     }
 
-    Eigen::MatrixXf filtered(valid_indices.size(), 3);
-    float x_min = std::numeric_limits<float>::max();
-    float x_max = std::numeric_limits<float>::lowest();
-    float y_min = std::numeric_limits<float>::max();
-    float y_max = std::numeric_limits<float>::lowest();
-    float z_min = std::numeric_limits<float>::max();
-    float z_max = std::numeric_limits<float>::lowest();
-    
-    for (size_t i = 0; i < valid_indices.size(); ++i) {
-        filtered.row(i) = points_lidar.row(valid_indices[i]);
-        
-        // 计算实际范围
-        float x = filtered(i, 0);
-        float y = filtered(i, 1);
-        float z = filtered(i, 2);
-        
-        x_min = std::min(x_min, x);
-        x_max = std::max(x_max, x);
-        y_min = std::min(y_min, y);
-        y_max = std::max(y_max, y);
-        z_min = std::min(z_min, z);
-        z_max = std::max(z_max, z);
+    // 优化：使用索引提取，避免显式循环
+    std::vector<int> indices;
+    indices.reserve(valid_count);
+    for (int i = 0; i < points_lidar.rows(); ++i) {
+        if (mask(i)) indices.push_back(i);
     }
-    
-    // 每隔一段时间输出实际有效范围
-    static int filter_count = 0;
-    filter_count++;
+
+    Eigen::MatrixXf filtered(valid_count, 3);
+    for (int i = 0; i < valid_count; ++i) {
+        filtered.row(i) = points_lidar.row(indices[i]);
+    }
 
     return filtered;
 }
 
 Eigen::MatrixXf SensorFusion::removeGroundPlane(const Eigen::MatrixXf& points) {
-    if (points.rows() < 10) {
+    if (points.rows() < 100) {
         return points;  // 点太少，无法进行平面拟合
     }
 
     // RANSAC参数
-    const int max_iterations = 50;           // 迭代次数
+    const int max_iterations = 40;           // 稍微减少迭代次数以稳定耗时
     const float distance_threshold = 0.05f;   // 点到平面距离阈值 (5cm)
     const int min_inliers = static_cast<int>(points.rows() * 0.3); // 至少30%的点是地面
+    const float early_termination_threshold = 0.6f; // 如果找到覆盖60%点的平面，提前终止
     
     Eigen::Vector4f best_plane(0, 0, 1, 0);  // 默认水平平面 z=0
     int best_inlier_count = 0;
     
-    std::srand(static_cast<unsigned int>(std::time(nullptr)));
+    // 使用局部随机数生成器，避免全局锁竞争
+    std::mt19937 gen(static_cast<unsigned int>(std::time(nullptr)));
+    std::uniform_int_distribution<> dis(0, points.rows() - 1);
     
     // RANSAC迭代
     for (int iter = 0; iter < max_iterations; ++iter) {
         // 随机选择3个点
-        std::vector<int> indices;
-        indices.reserve(3);
-        for (int i = 0; i < 3; ++i) {
-            int idx = std::rand() % points.rows();
-            indices.push_back(idx);
-        }
-        
-        // 计算平面方程 ax + by + cz + d = 0
-        Eigen::Vector3f p1 = points.row(indices[0]);
-        Eigen::Vector3f p2 = points.row(indices[1]);
-        Eigen::Vector3f p3 = points.row(indices[2]);
+        Eigen::Vector3f p1 = points.row(dis(gen));
+        Eigen::Vector3f p2 = points.row(dis(gen));
+        Eigen::Vector3f p3 = points.row(dis(gen));
         
         Eigen::Vector3f v1 = p2 - p1;
         Eigen::Vector3f v2 = p3 - p1;
         Eigen::Vector3f normal = v1.cross(v2);
         
-        if (normal.norm() < 1e-6) {
-            continue;  // 三点共线，跳过
-        }
-        
+        if (normal.norm() < 1e-6) continue;
         normal.normalize();
         float d = -normal.dot(p1);
         
-        // 确保法向量朝上（在Lidar坐标系，地面法向量应该主要朝+Z方向）
-        if (normal(2) < 0) {
-            normal = -normal;
-            d = -d;
-        }
+        if (normal(2) < 0) { normal = -normal; d = -d; }
+        if (normal(2) < 0.8f) continue; 
         
-        // 检查是否接近水平面（法向量Z分量应该接近1）
-        if (normal(2) < 0.8f) {
-            continue;  // 不是接近水平的平面，跳过
-        }
-        
-        // 统计内点
-        int inlier_count = 0;
-        for (int i = 0; i < points.rows(); ++i) {
-            float distance = std::abs(normal.dot(points.row(i)) + d);
-            if (distance < distance_threshold) {
-                inlier_count++;
-            }
-        }
+        // 统计内点 - 使用Eigen向量化加速
+        Eigen::VectorXf distances = (points * normal).array() + d;
+        int inlier_count = (distances.array().abs() < distance_threshold).count();
         
         // 更新最佳平面
         if (inlier_count > best_inlier_count) {
             best_inlier_count = inlier_count;
             best_plane << normal(0), normal(1), normal(2), d;
+            
+            // 性能优化：提前终止逻辑
+            if (static_cast<float>(inlier_count) / points.rows() > early_termination_threshold) {
+                break;
+            }
         }
     }
     
     // 如果找到了有效的地面平面，移除地面点
     if (best_inlier_count >= min_inliers) {
+        Eigen::VectorXf final_distances = (points * best_plane.head<3>()).array() + best_plane(3);
         std::vector<int> non_ground_indices;
         non_ground_indices.reserve(points.rows());
         
         for (int i = 0; i < points.rows(); ++i) {
-            float distance = std::abs(best_plane.head<3>().dot(points.row(i)) + best_plane(3));
-            if (distance >= distance_threshold) {
+            if (std::abs(final_distances(i)) >= distance_threshold) {
                 non_ground_indices.push_back(i);
             }
         }
@@ -194,6 +158,64 @@ Eigen::MatrixXf SensorFusion::removeGroundPlane(const Eigen::MatrixXf& points) {
     return points;
 }
 
+Eigen::MatrixXf SensorFusion::preprocessPointCloud(const Eigen::MatrixXf& points_lidar) {
+    if (points_lidar.rows() == 0) {
+        return points_lidar;
+    }
+
+    // 1. 范围过滤
+    Eigen::MatrixXf filtered = filterPointsInLidarRange(points_lidar);
+    
+    // 2. 体素滤波降采样（大幅减少后续计算量）
+    if (voxel_size_ > 0.01f) {
+        filtered = voxelFilter(filtered, voxel_size_);
+    }
+
+    // 3. 地面移除
+    if (use_ground_plane_) {
+        filtered = removeGroundPlane(filtered);
+    }
+    
+    // 注意：不再对全场点云进行 removeOutliers，因为那是针对单个物体的算法
+
+    return filtered;
+}
+
+Eigen::MatrixXf SensorFusion::voxelFilter(const Eigen::MatrixXf& points, float leaf_size) {
+    if (points.rows() <= 1) return points;
+
+    // 优化：预留空间减少 rehash，使用更高效的哈希组合
+    std::unordered_map<size_t, std::pair<Eigen::Vector3f, int>> voxel_map;
+    voxel_map.reserve(points.rows() / 2); 
+    
+    const float inv_leaf_size = 1.0f / leaf_size;
+    
+    // 计算体素索引并累加点
+    for (int i = 0; i < points.rows(); ++i) {
+        int64_t ix = static_cast<int64_t>(std::floor(points(i, 0) * inv_leaf_size));
+        int64_t iy = static_cast<int64_t>(std::floor(points(i, 1) * inv_leaf_size));
+        int64_t iz = static_cast<int64_t>(std::floor(points(i, 2) * inv_leaf_size));
+        
+        // 使用位移组合索引，比多次哈希更快
+        size_t h = (static_cast<size_t>(ix) * 73856093) ^ 
+                   (static_cast<size_t>(iy) * 19349663) ^ 
+                   (static_cast<size_t>(iz) * 83492791);
+        
+        auto& entry = voxel_map[h];
+        entry.first += points.row(i).transpose();
+        entry.second++;
+    }
+    
+    // 计算每个体素的重心
+    Eigen::MatrixXf result(voxel_map.size(), 3);
+    int idx = 0;
+    for (auto const& [key, val] : voxel_map) {
+        result.row(idx++) = (val.first / static_cast<float>(val.second)).transpose();
+    }
+    
+    return result;
+}
+
 Eigen::MatrixXf SensorFusion::transformLidarToCamera(
     const Eigen::MatrixXf& points_lidar,
     const CameraModel& model) {
@@ -201,22 +223,12 @@ Eigen::MatrixXf SensorFusion::transformLidarToCamera(
         return Eigen::MatrixXf(0, 3);
     }
 
-    Eigen::MatrixXf filtered = filterPointsInLidarRange(points_lidar);
-    if (use_ground_plane_) {
-        filtered = removeGroundPlane(filtered);
-    }
-    filtered = removeOutliers(filtered);
-
-    if (filtered.rows() == 0) {
-        return filtered;
-    }
-
-    Eigen::MatrixXf points_homo(filtered.rows(), 4);
-    points_homo.leftCols(3) = filtered;
-    points_homo.col(3).setOnes();
-
-    Eigen::MatrixXf points_camera = (model.transform_matrix * points_homo.transpose()).transpose();
-    return points_camera.leftCols(3);
+    // 优化：避免创建齐次坐标矩阵，直接进行矩阵运算
+    // points_camera = points_lidar * R^T + t^T
+    Eigen::Matrix3f R = model.transform_matrix.block<3, 3>(0, 0);
+    Eigen::Vector3f t = model.transform_matrix.block<3, 1>(0, 3);
+    
+    return (points_lidar * R.transpose()).rowwise() + t.transpose();
 }
 
 void SensorFusion::projectPointsToImage(
@@ -225,31 +237,39 @@ void SensorFusion::projectPointsToImage(
     Eigen::MatrixXf& image_points,
     Eigen::VectorXf& depths,
     std::vector<int>& valid_indices) {
+    
+    const int num_points = points_camera.rows();
+    if (num_points == 0) return;
+
     valid_indices.clear();
+    valid_indices.reserve(num_points);
 
-    for (int i = 0; i < points_camera.rows(); ++i) {
-        const float z = points_camera(i, 2);
-        if (z <= 0.1f) {
-            continue;  // 过滤在相机后方的点
+    // 1. 快速筛选有效点 (z > 0.1)
+    for (int i = 0; i < num_points; ++i) {
+        if (points_camera(i, 2) > 0.1f) {
+            valid_indices.push_back(i);
         }
-
-        valid_indices.push_back(i);
     }
 
     const int count = static_cast<int>(valid_indices.size());
     image_points = Eigen::MatrixXf(count, 2);
     depths = Eigen::VectorXf(count);
 
-    for (int idx = 0; idx < count; ++idx) {
-        int source_idx = valid_indices[idx];
-        const float z = points_camera(source_idx, 2);
-        const float x = points_camera(source_idx, 0) / z * model.fx + model.cx;
-        const float y = points_camera(source_idx, 1) / z * model.fy + model.cy;
+    if (count == 0) return;
 
-        image_points(idx, 0) = x;
-        image_points(idx, 1) = y;
-        depths(idx) = z;
+    // 2. 向量化投影计算
+    // 提取有效点的坐标
+    Eigen::MatrixXf valid_points(count, 3);
+    for (int i = 0; i < count; ++i) {
+        valid_points.row(i) = points_camera.row(valid_indices[i]);
     }
+
+    Eigen::ArrayXf z = valid_points.col(2).array();
+    Eigen::ArrayXf inv_z = 1.0f / z;
+
+    image_points.col(0) = (valid_points.col(0).array() * inv_z * model.fx + model.cx).matrix();
+    image_points.col(1) = (valid_points.col(1).array() * inv_z * model.fy + model.cy).matrix();
+    depths = valid_points.col(2);
 }
 
 Eigen::MatrixXf SensorFusion::getPointsInBBox(const Eigen::MatrixXf& points_camera,
@@ -752,18 +772,72 @@ std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
     }
     const auto& model = it->second;
 
+    // 1. 转换到相机坐标系
     Eigen::MatrixXf points_camera = transformLidarToCamera(points_lidar, model);
     if (points_camera.rows() == 0) {
-        RCLCPP_WARN(rclcpp::get_logger("SensorFusion"),
-                    "No valid points in camera frame for %s", camera_id.c_str());
+        return fused_detections;
+    }
+
+    // 2. 【关键优化】预先投影所有点到图像平面，避免在每个检测框循环中重复投影
+    Eigen::MatrixXf image_points;
+    Eigen::VectorXf depths;
+    std::vector<int> valid_indices;
+    projectPointsToImage(points_camera, model, image_points, depths, valid_indices);
+
+    if (image_points.rows() == 0) {
         return fused_detections;
     }
 
     for (const auto& det : detections) {
         Detection fused_det = det;
 
-        Eigen::MatrixXf points_in_box = getPointsInBBox(
-            points_camera, det.bbox, image_height, image_width, model);
+        // 3. 直接使用预投影的点进行框内筛选
+        const float x1 = det.bbox[0];
+        const float y1 = det.bbox[1];
+        const float x2 = det.bbox[2];
+        const float y2 = det.bbox[3];
+
+        std::vector<int> box_indices;
+        std::vector<float> box_depths;
+        box_indices.reserve(image_points.rows() / 10); // 预估
+        box_depths.reserve(image_points.rows() / 10);
+
+        for (int i = 0; i < image_points.rows(); ++i) {
+            const float x = image_points(i, 0);
+            const float y = image_points(i, 1);
+
+            if (x >= x1 && x <= x2 && y >= y1 && y <= y2 &&
+                x >= 0 && x < image_width && y >= 0 && y < image_height) {
+                box_indices.push_back(valid_indices[i]);
+                box_depths.push_back(depths(i));
+            }
+        }
+
+        Eigen::MatrixXf points_in_box;
+        if (!box_indices.empty()) {
+            // 深度过滤逻辑（移自 getPointsInBBox）
+            std::vector<float> depths_sorted = box_depths;
+            std::nth_element(depths_sorted.begin(), 
+                             depths_sorted.begin() + depths_sorted.size() / 2,
+                             depths_sorted.end());
+            float median_depth = depths_sorted[depths_sorted.size() / 2];
+            
+            float depth_threshold = (median_depth < 2.5f) ? 0.8f : (median_depth < 4.0f ? 0.5f : 0.4f);
+            
+            std::vector<int> filtered_indices;
+            for (size_t i = 0; i < box_indices.size(); ++i) {
+                if (std::abs(box_depths[i] - median_depth) <= depth_threshold) {
+                    filtered_indices.push_back(box_indices[i]);
+                }
+            }
+            
+            if (filtered_indices.empty()) filtered_indices = box_indices;
+
+            points_in_box = Eigen::MatrixXf(filtered_indices.size(), 3);
+            for (size_t i = 0; i < filtered_indices.size(); ++i) {
+                points_in_box.row(i) = points_camera.row(filtered_indices[i]);
+            }
+        }
 
         if (points_in_box.rows() >= min_points_in_box_) {
             BBox3D bbox_3d;

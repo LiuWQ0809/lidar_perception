@@ -112,6 +112,7 @@ fusion:
   min_points_in_box: 5  # 3D框内最少点云数量
   outlier_threshold: 0.5  # 离群点阈值(米)
   use_ground_plane: true
+  voxel_size: 0.15        # 体素滤波尺寸(米)，增加此值可显著降低CPU占用
   duplicate_merge_distance: 0.9  # 跨相机结果合并阈值(米)
   ground_clamp_margin: 0.02      # 防止框沉入地面（米）
   person_height_range: [1.45, 1.85]  # 行人高度约束范围(米)
@@ -128,7 +129,8 @@ publisher:
 performance:
   use_gpu: true
   use_cupy: true
-  num_threads: 2  # 减少线程数以降低CPU占用
+  num_threads: 4  # 增加线程数以配合MultiThreadedExecutor
+  lidar_downsample: 2  # 激光雷达降采样（1表示不降采样，2表示取1/2的点）
   queue_size: 10   # 增大队列（从3增加到10，减少丢帧）
   frame_skip: 0   # 跳帧数，0表示不跳帧
   use_message_sync: false  # 使用消息同步器（新增）

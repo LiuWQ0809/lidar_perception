@@ -22,29 +22,29 @@ Eigen::MatrixXf LivoxParser::parsePointCloud2(
         return Eigen::MatrixXf(0, 3);
     }
 
-    std::vector<Eigen::Vector3f> valid_points;
-    valid_points.reserve(num_points);
+    // 直接预分配Eigen矩阵，避免中间vector
+    Eigen::MatrixXf points(num_points / downsample_ratio_ + 1, 3);
+    size_t valid_count = 0;
 
-    // 假设点云格式为 x, y, z (每个4字节float)
     const uint8_t* data_ptr = msg->data.data();
+    const size_t step = point_step * downsample_ratio_;
     
-    for (size_t i = 0; i < msg->data.size(); i += point_step) {
+    for (size_t i = 0; i < msg->data.size(); i += step) {
         float x, y, z;
         std::memcpy(&x, data_ptr + i, sizeof(float));
         std::memcpy(&y, data_ptr + i + 4, sizeof(float));
         std::memcpy(&z, data_ptr + i + 8, sizeof(float));
 
         if (isValidPoint(x, y, z)) {
-            valid_points.emplace_back(x, y, z);
+            points(valid_count, 0) = x;
+            points(valid_count, 1) = y;
+            points(valid_count, 2) = z;
+            valid_count++;
         }
     }
 
-    // 转换为Eigen矩阵
-    const size_t valid_count = valid_points.size();
-    Eigen::MatrixXf points(valid_count, 3);
-    
-    for (size_t i = 0; i < valid_count; ++i) {
-        points.row(i) = valid_points[i];
+    if (valid_count < num_points) {
+        return points.topRows(valid_count);
     }
 
     return points;

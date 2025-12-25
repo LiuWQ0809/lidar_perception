@@ -46,3 +46,5 @@ build
 install
 log
 logs
+
+.fusion_node.pid

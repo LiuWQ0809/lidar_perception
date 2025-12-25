@@ -75,10 +75,17 @@ public:
     void registerCamera(const std::string& camera_id, const CameraModel& model);
 
     /**
+     * @brief 预处理点云（过滤范围、移除地面、移除离群点）
+     * @param points_lidar 原始点云
+     * @return 预处理后的点云
+     */
+    Eigen::MatrixXf preprocessPointCloud(const Eigen::MatrixXf& points_lidar);
+
+    /**
      * @brief 将Lidar点云从lidar坐标系转换到camera坐标系
      * @param points_lidar 输入点云 (N x 3)
      * @param model 相机模型
-     * @return 转换后的点云 (M x 3)，可能经过感知范围过滤
+     * @return 转换后的点云 (M x 3)
      */
     Eigen::MatrixXf transformLidarToCamera(const Eigen::MatrixXf& points_lidar,
                                            const CameraModel& model);
@@ -166,6 +173,14 @@ private:
     Eigen::MatrixXf removeOutliers(const Eigen::MatrixXf& points);
 
     /**
+     * @brief 体素滤波降采样
+     * @param points 输入点云
+     * @param leaf_size 体素大小
+     * @return 降采样后的点云
+     */
+    Eigen::MatrixXf voxelFilter(const Eigen::MatrixXf& points, float leaf_size);
+
+    /**
      * @brief 使用RANSAC算法检测并移除地面点
      * @param points 输入点云（Lidar坐标系）
      * @return 移除地面后的点云
@@ -199,6 +214,7 @@ private:
     int min_points_in_box_;
     float outlier_threshold_;
     bool use_ground_plane_;  // 是否使用地面移除
+    float voxel_size_;       // 体素滤波尺寸 (米)
 
     // 感知范围（Lidar坐标系，从YAML配置文件读取）
     PerceptionRange lidar_range_;
