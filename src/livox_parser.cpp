@@ -8,37 +8,6 @@ LivoxParser::LivoxParser() {
     // Constructor
 }
 
-Eigen::MatrixXf LivoxParser::parseCustomMsg(
-    const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg) {
-    
-    if (msg->points.empty()) {
-        return Eigen::MatrixXf(0, 3);
-    }
-
-    const size_t num_points = msg->points.size();
-    
-    // 预分配内存
-    std::vector<Eigen::Vector3f> valid_points;
-    valid_points.reserve(num_points);
-
-    // 提取有效点
-    for (const auto& point : msg->points) {
-        if (isValidPoint(point.x, point.y, point.z)) {
-            valid_points.emplace_back(point.x, point.y, point.z);
-        }
-    }
-
-    // 转换为Eigen矩阵
-    const size_t valid_count = valid_points.size();
-    Eigen::MatrixXf points(valid_count, 3);
-    
-    for (size_t i = 0; i < valid_count; ++i) {
-        points.row(i) = valid_points[i];
-    }
-
-    return points;
-}
-
 Eigen::MatrixXf LivoxParser::parsePointCloud2(
     const sensor_msgs::msg::PointCloud2::SharedPtr& msg) {
     

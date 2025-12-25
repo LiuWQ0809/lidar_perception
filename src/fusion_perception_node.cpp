@@ -124,13 +124,16 @@ FusionPerceptionNode::FusionPerceptionNode()
 
     frame_skip_ = config_["performance"]["frame_skip"].as<int>();
     max_time_diff_ = config_["performance"]["sync_slop"].as<double>();
+    check_time_diff_ = config_["performance"]["check_time_diff"] 
+        ? config_["performance"]["check_time_diff"].as<bool>() 
+        : true;
     int queue_size = config_["performance"]["queue_size"].as<int>();
     queue_size = std::max(1, queue_size);
 
     initializeCameras(package_share_dir, queue_size);
 
     auto lidar_topic = config_["sensors"]["lidar"]["topic"].as<std::string>();
-    lidar_sub_ = this->create_subscription<livox_ros_driver2::msg::CustomMsg>(
+    lidar_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         lidar_topic, queue_size,
         std::bind(&FusionPerceptionNode::lidarDrivenCallback, this, std::placeholders::_1));
 
@@ -540,7 +543,7 @@ void FusionPerceptionNode::cameraCallback(
 }
 
 void FusionPerceptionNode::lidarDrivenCallback(
-    const livox_ros_driver2::msg::CustomMsg::SharedPtr lidar_msg) {
+    const sensor_msgs::msg::PointCloud2::SharedPtr lidar_msg) {
     lidar_received_count_++;
 
     if (frame_skip_ > 0) {
@@ -555,7 +558,7 @@ void FusionPerceptionNode::lidarDrivenCallback(
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    Eigen::MatrixXf points = livox_parser_->parseCustomMsg(lidar_msg);
+    Eigen::MatrixXf points = livox_parser_->parsePointCloud2(lidar_msg);
     std::vector<Detection> detections_body;
     bool any_camera_ready = false;
 
@@ -574,7 +577,7 @@ void FusionPerceptionNode::lidarDrivenCallback(
 
         double image_time = image_stamp.seconds();
         double time_diff = std::abs(lidar_time - image_time);
-        if (time_diff > max_time_diff_) {
+        if (check_time_diff_ && time_diff > max_time_diff_) {
             continue;
         }
         any_camera_ready = true;

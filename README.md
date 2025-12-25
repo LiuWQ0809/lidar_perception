@@ -29,7 +29,6 @@ C++实现的相机和激光雷达融合感知系统，用于3D目标检测和跟
 - **OpenCV** >= 4.2
 - **Eigen3**
 - **yaml-cpp**
-- **livox_ros_driver2**
 
 ### 可选依赖（用于TensorRT加速）
 - **CUDA** >= 11.0
@@ -81,16 +80,7 @@ sudo apt install -y \
     ros-${ROS_DISTRO}-image-transport
 ```
 
-### 2. 安装 Livox ROS2 驱动
-
-```bash
-cd ~/ros2_ws/src
-git clone https://github.com/Livox-SDK/livox_ros_driver2.git
-cd ~/ros2_ws
-colcon build --packages-select livox_ros_driver2
-```
-
-### 3. （可选）安装 TensorRT
+### 2. （可选）安装 TensorRT
 
 如果需要使用 TensorRT 加速检测：
 
@@ -102,7 +92,7 @@ dpkg -l | grep TensorRT
 # 如果未安装，请从 NVIDIA 官网下载对应版本
 ```
 
-### 4. 编译项目
+### 3. 编译项目
 
 ```bash
 cd /home/nvidia/liuwq/fusion_cpp
@@ -130,19 +120,19 @@ To run the node, use:
 ```yaml
 sensors:
   lidar:
-    topic: "/livox/lidar"
+    topic: "/iv_points"
   cameras:
     - name: front_left
-      topic: "/cr/camera/rgb/front_left_full"
-      encoding: "rgb8"
+      topic: "/cr/camera/bgr/front_left_960_768"
+      encoding: "bgr8"
       calibration: "calibration/front_left.yaml"
-      image_size: [1920, 1080]
+      image_size: [960, 768]
       projection_model: pinhole
     - name: front_right
-      topic: "/cr/camera/rgb/front_right_full"
-      encoding: "rgb8"
+      topic: "/cr/camera/bgr/front_right_960_768"
+      encoding: "bgr8"
       calibration: "calibration/front_right.yaml"
-      image_size: [1920, 1080]
+      image_size: [960, 768]
       projection_model: pinhole
     - name: left
       topic: "/cr/camera/bgr/left_960_768"
@@ -198,7 +188,7 @@ ros2 run rqt_image_view rqt_image_view /fusion_perception/visualization
 
 ### 订阅话题
 - 多路相机图像 (sensor_msgs/Image)：由 `config/fusion_config.yaml` 中 `sensors.cameras` 列表定义，例如 `/cr/camera/rgb/front_left_full`、`/cr/camera/bgr/left_960_768` 等
-- `/livox/lidar` (livox_ros_driver2/CustomMsg) - Lidar 点云
+- `/iv_points` (sensor_msgs/PointCloud2) - Lidar 点云
 
 ### 发布话题
 - `/fusion_perception/obstacles` (visualization_msgs/MarkerArray) - 3D 障碍物
@@ -233,22 +223,6 @@ ros2 run rqt_image_view rqt_image_view /fusion_perception/visualization
 | 代码复杂度 | 简单 | 中等 |
 
 ## 故障排除
-
-### 编译错误
-
-**问题**: `livox_ros_driver2 not found`
-```bash
-# 解决: 先编译 livox_ros_driver2
-cd ~/ros2_ws
-colcon build --packages-select livox_ros_driver2
-source install/setup.bash
-```
-
-**问题**: `TensorRT headers not found`
-```bash
-# 解决: 安装 TensorRT 或禁用 TensorRT
-# 在 CMakeLists.txt 中注释掉 find_package(TensorRT)
-```
 
 ### 运行时错误
 

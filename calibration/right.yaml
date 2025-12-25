@@ -34,7 +34,7 @@ projection_parameters:
 
 # 目前仅支持4个相机一样的配置，不一样会引发未知错误
 orign_x: 1920
-orign_y: 1080
+orign_y: 1536
 input_x: 960
 input_y: 768
 output_x: 960

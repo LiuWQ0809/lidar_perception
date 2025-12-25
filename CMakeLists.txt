@@ -18,7 +18,6 @@ find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(image_transport REQUIRED)
-find_package(livox_ros_driver2 REQUIRED)
 
 # System dependencies
 find_package(Eigen3 REQUIRED)
@@ -75,7 +74,6 @@ ament_target_dependencies(fusion_perception_core
   rclcpp
   sensor_msgs
   std_msgs
-  livox_ros_driver2
 )
 
 target_link_libraries(fusion_perception_core
@@ -119,7 +117,6 @@ ament_target_dependencies(fusion_perception_node
   std_msgs
   cv_bridge
   image_transport
-  livox_ros_driver2
 )
 
 target_link_libraries(fusion_perception_node

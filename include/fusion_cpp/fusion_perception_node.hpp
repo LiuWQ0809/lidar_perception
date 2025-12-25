@@ -6,7 +6,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <cv_bridge/cv_bridge.h>
-#include <livox_ros_driver2/msg/custom_msg.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include "fusion_cpp/livox_parser.hpp"
 #include "fusion_cpp/sensor_fusion.hpp"
@@ -71,7 +71,7 @@ private:
 
     void cameraCallback(const std::string& camera_id,
                         const sensor_msgs::msg::Image::SharedPtr msg);
-    void lidarDrivenCallback(const livox_ros_driver2::msg::CustomMsg::SharedPtr msg);
+    void lidarDrivenCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
     bool getLatestCameraFrame(const std::shared_ptr<CameraContext>& camera,
                               cv::Mat& image,
@@ -126,9 +126,10 @@ private:
     std::deque<double> publish_intervals_;
     double last_publish_time_;
     double max_time_diff_;
+    bool check_time_diff_;
 
     // ROS订阅和发布
-    rclcpp::Subscription<livox_ros_driver2::msg::CustomMsg>::SharedPtr lidar_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr lidar_sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_pub_;
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr viz_pub_;
 };

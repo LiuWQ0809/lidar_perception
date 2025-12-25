@@ -3,7 +3,7 @@
 # Fusion Perception C++ - Run Script
 # 运行脚本
 
-PROJECT_DIR="/home/nvidia/liuwq/lidar_perception"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_NAME="fusion_perception_node"
 
 # 检查是否已编译

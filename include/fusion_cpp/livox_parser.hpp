@@ -3,14 +3,13 @@
 
 #include <vector>
 #include <Eigen/Dense>
-#include "livox_ros_driver2/msg/custom_msg.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 
 namespace fusion_cpp {
 
 /**
- * @brief Livox点云数据解析器
- * 解析livox_ros_driver2的CustomMsg消息
+ * @brief Lidar点云数据解析器
+ * 解析PointCloud2消息
  */
 class LivoxParser {
 public:
@@ -18,14 +17,7 @@ public:
     ~LivoxParser() = default;
 
     /**
-     * @brief 解析Livox CustomMsg消息
-     * @param msg Livox CustomMsg消息
-     * @return 点云矩阵 (N x 3), 每行为 [x, y, z]
-     */
-    Eigen::MatrixXf parseCustomMsg(const livox_ros_driver2::msg::CustomMsg::SharedPtr& msg);
-
-    /**
-     * @brief 解析标准PointCloud2消息 (备用)
+     * @brief 解析标准PointCloud2消息
      * @param msg PointCloud2消息
      * @return 点云矩阵 (N x 3), 每行为 [x, y, z]
      */

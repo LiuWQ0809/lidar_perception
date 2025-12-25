@@ -16,7 +16,6 @@
   <depend>std_msgs</depend>
   <depend>cv_bridge</depend>
   <depend>image_transport</depend>
-  <depend>livox_ros_driver2</depend>
 
   <!-- System dependencies -->
   <depend>eigen</depend>

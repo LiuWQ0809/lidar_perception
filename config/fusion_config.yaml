@@ -3,26 +3,26 @@
 # 传感器配置
 sensors:
   lidar:
-    topic: "/livox/lidar"
+    topic: "/iv_points"
 
   cameras:
     - name: "front_left"
-      topic: "/cr/camera/rgb/front_left_full"
-      encoding: "rgb8"
-      image_size: [1920, 1080]
+      topic: "/cr/camera/bgr/front_left_960_768"
+      encoding: "bgr8"
+      image_size: [960, 768]
       calibration: "calibration/front_left.yaml"
-      calibration_size: [1920, 1080]
-      undistort_size: [1920, 1080]
+      calibration_size: [1920, 1536]
+      undistort_size: [960, 768]
       projection_model: "pinhole"
       enabled: true
 
     - name: "front_right"
-      topic: "/cr/camera/rgb/front_right_full"
-      encoding: "rgb8"
-      image_size: [1920, 1080]
+      topic: "/cr/camera/bgr/front_right_960_768"
+      encoding: "bgr8"
+      image_size: [960, 768]
       calibration: "calibration/front_right.yaml"
-      calibration_size: [1920, 1080]
-      undistort_size: [1920, 1080]
+      calibration_size: [1920, 1536]
+      undistort_size: [960, 768]
       projection_model: "pinhole"
       enabled: true
 
@@ -31,30 +31,30 @@ sensors:
       encoding: "bgr8"
       image_size: [960, 768]
       calibration: "calibration/left.yaml"
-      calibration_size: [1920, 1080]
+      calibration_size: [1920, 1536]
       undistort_size: [960, 768]
-      projection_model: "fisheye"
-      enabled: true
+      projection_model: "pinhole"
+      enabled: false
 
     - name: "right"
       topic: "/cr/camera/bgr/right_960_768"
       encoding: "bgr8"
       image_size: [960, 768]
       calibration: "calibration/right.yaml"
-      calibration_size: [1920, 1080]
+      calibration_size: [1920, 1536]
       undistort_size: [960, 768]
-      projection_model: "fisheye"
-      enabled: true
+      projection_model: "pinhole"
+      enabled: false
 
     - name: "rear"
       topic: "/cr/camera/bgr/rear_960_768"
       encoding: "bgr8"
       image_size: [960, 768]
       calibration: "calibration/rear.yaml"
-      calibration_size: [1920, 1080]
+      calibration_size: [1920, 1536]
       undistort_size: [960, 768]
-      projection_model: "fisheye"
-      enabled: true
+      projection_model: "pinhole"
+      enabled: false
 
 # 外参标定：Lidar到Body的转换矩阵 (Body坐标系: X前, Y左, Z上)
 extrinsic:
@@ -132,6 +132,7 @@ performance:
   queue_size: 10   # 增大队列（从3增加到10，减少丢帧）
   frame_skip: 0   # 跳帧数，0表示不跳帧
   use_message_sync: false  # 使用消息同步器（新增）
+  check_time_diff: false    # 是否检查Lidar和相机的时间差
   sync_slop: 0.2  # 同步时间容差200ms（以lidar为主，camera容差200ms）
   # GPU优化
   gpu_memory_fraction: 0.8  # GPU内存使用比例
