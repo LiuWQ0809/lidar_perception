@@ -20,7 +20,7 @@ public:
     KalmanFilter();
     ~KalmanFilter() = default;
 
-    void predict();
+    void predict(float dt = 0.1f);
     void update(const Eigen::VectorXf& measurement);
 
     Eigen::VectorXf x;  // 状态向量 (10x1)
@@ -42,7 +42,7 @@ public:
     explicit Track(const Detection& detection, int track_id = -1);
     ~Track() = default;
 
-    void predict();
+    void predict(float dt = 0.1f);
     void update(const Detection& detection);
     Detection getState() const;
 
@@ -70,9 +70,10 @@ public:
     /**
      * @brief 更新跟踪
      * @param detections_3d 3D检测结果列表
+     * @param timestamp 当前帧时间戳 (秒)
      * @return 跟踪结果列表
      */
-    std::vector<Detection> update(const std::vector<Detection>& detections_3d);
+    std::vector<Detection> update(const std::vector<Detection>& detections_3d, double timestamp);
 
     /**
      * @brief 重置跟踪器
@@ -96,6 +97,11 @@ private:
         std::vector<int>& unmatched_trks);
 
     /**
+     * @brief 计算两个2D框的IoU
+     */
+    float calculateIoU(const std::vector<float>& box1, const std::vector<float>& box2);
+
+    /**
      * @brief 计算检测与跟踪之间的距离
      * @param detection 检测结果
      * @param track 跟踪对象
@@ -109,6 +115,11 @@ private:
     void recoverUnmatched(const std::vector<Detection>& detections,
                           std::vector<int>& unmatched_dets,
                           std::vector<int>& unmatched_trks);
+
+    /**
+     * @brief 合并距离过近的跟踪，防止目标分裂
+     */
+    void mergeCloseTracks();
 
     /**
      * @brief 根据运动速度对输出姿态平滑
@@ -135,6 +146,7 @@ private:
 
     std::vector<std::shared_ptr<Track>> tracks_;
     int frame_count_;
+    double last_timestamp_;
     static int next_track_id_;
     std::unordered_map<int, Detection> last_smoothed_states_;
 };

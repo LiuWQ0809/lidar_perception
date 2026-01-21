@@ -77,7 +77,7 @@ FusionPerceptionNode::FusionPerceptionNode()
         : 0.02f;
     duplicate_merge_distance_ = (fusion_node && fusion_node["duplicate_merge_distance"])
         ? fusion_node["duplicate_merge_distance"].as<float>()
-        : 0.9f;
+        : 1.5f; // 从 0.9m 增加到 1.5m，防止分裂
 
     if (fusion_node && fusion_node["person_height_range"] &&
         fusion_node["person_height_range"].IsSequence() &&
@@ -487,10 +487,12 @@ std::vector<Detection> FusionPerceptionNode::suppressDuplicates(
         }
 
         const auto& base = detections[i];
-        Eigen::Vector3f center_sum = base.bbox_3d.center;
-        Eigen::Vector3f size_sum = base.bbox_3d.size;
-        float sin_sum = std::sin(base.bbox_3d.yaw);
-        float cos_sum = std::cos(base.bbox_3d.yaw);
+        float total_weight = base.confidence;
+        Eigen::Vector3f weighted_center = base.bbox_3d.center * base.confidence;
+        Eigen::Vector3f weighted_size = base.bbox_3d.size * base.confidence;
+        float sin_sum = std::sin(base.bbox_3d.yaw) * base.confidence;
+        float cos_sum = std::cos(base.bbox_3d.yaw) * base.confidence;
+        
         float best_conf = base.confidence;
         size_t best_idx = i;
         int count = 1;
@@ -506,18 +508,28 @@ std::vector<Detection> FusionPerceptionNode::suppressDuplicates(
             Eigen::Vector3f diff = detections[j].bbox_3d.center - base.bbox_3d.center;
             float planar_dist = diff.head<2>().norm();
             float height_diff = std::abs(diff(2));
-            float dyn_thresh = std::max(duplicate_merge_distance_,
+            
+            // 【优化】针对行人的合并阈值放宽，防止分裂
+            float merge_thresh = duplicate_merge_distance_;
+            if (base.class_name == "person") {
+                merge_thresh = std::max(merge_thresh, 1.2f);
+            }
+
+            float dyn_thresh = std::max(merge_thresh,
                                         0.25f * (detections[j].bbox_3d.size(0) + detections[j].bbox_3d.size(1) +
                                                  base.bbox_3d.size(0) + base.bbox_3d.size(1)));
-            if (planar_dist > dyn_thresh || height_diff > 0.8f) {
+            if (planar_dist > dyn_thresh || height_diff > 1.0f) {
                 continue;
             }
 
             consumed[j] = true;
-            center_sum += detections[j].bbox_3d.center;
-            size_sum += detections[j].bbox_3d.size;
-            sin_sum += std::sin(detections[j].bbox_3d.yaw);
-            cos_sum += std::cos(detections[j].bbox_3d.yaw);
+            float weight = detections[j].confidence;
+            weighted_center += detections[j].bbox_3d.center * weight;
+            weighted_size += detections[j].bbox_3d.size * weight;
+            sin_sum += std::sin(detections[j].bbox_3d.yaw) * weight;
+            cos_sum += std::cos(detections[j].bbox_3d.yaw) * weight;
+            total_weight += weight;
+
             if (detections[j].confidence > best_conf) {
                 best_conf = detections[j].confidence;
                 best_idx = j;
@@ -526,10 +538,12 @@ std::vector<Detection> FusionPerceptionNode::suppressDuplicates(
         }
 
         Detection fused = detections[best_idx];
-        fused.bbox_3d.center = center_sum / static_cast<float>(count);
-        fused.bbox_3d.size = size_sum / static_cast<float>(count);
-        if (std::abs(sin_sum) > 1e-3f || std::abs(cos_sum) > 1e-3f) {
-            fused.bbox_3d.yaw = std::atan2(sin_sum, cos_sum);
+        if (total_weight > 1e-3f) {
+            fused.bbox_3d.center = weighted_center / total_weight;
+            fused.bbox_3d.size = weighted_size / total_weight;
+            if (std::abs(sin_sum) > 1e-3f || std::abs(cos_sum) > 1e-3f) {
+                fused.bbox_3d.yaw = std::atan2(sin_sum, cos_sum);
+            }
         }
         enforceGroundConstraint(fused);
         merged_results.push_back(fused);
@@ -658,8 +672,8 @@ void FusionPerceptionNode::lidarDrivenCallback(
     }
 
     auto deduped_detections = suppressDuplicates(detections_body);
-    auto tracked_objects = tracker_->update(deduped_detections);
-    publishObstacles(tracked_objects);
+    auto tracked_objects = tracker_->update(deduped_detections, lidar_time);
+    publishObstacles(tracked_objects, lidar_msg->header.stamp);
 
     auto end_time = std::chrono::high_resolution_clock::now();
     double process_time = std::chrono::duration<double, std::milli>(
@@ -684,12 +698,12 @@ void FusionPerceptionNode::lidarDrivenCallback(
 }
 
 void FusionPerceptionNode::publishObstacles(
-    const std::vector<Detection>& tracked_objects) {
+    const std::vector<Detection>& tracked_objects, const rclcpp::Time& timestamp) {
     visualization_msgs::msg::MarkerArray marker_array;
     std::string frame_id = config_["publisher"]["frame_id"].as<std::string>();
 
     for (size_t i = 0; i < tracked_objects.size(); ++i) {
-        auto marker = createBBoxMarker(tracked_objects[i], static_cast<int>(i), frame_id);
+        auto marker = createBBoxMarker(tracked_objects[i], static_cast<int>(i), frame_id, timestamp);
         marker_array.markers.push_back(marker);
     }
 
@@ -718,10 +732,10 @@ cv::Mat FusionPerceptionNode::visualizeResults(
 }
 
 visualization_msgs::msg::Marker FusionPerceptionNode::createBBoxMarker(
-    const Detection& obj, int id, const std::string& frame_id) {
+    const Detection& obj, int id, const std::string& frame_id, const rclcpp::Time& timestamp) {
     visualization_msgs::msg::Marker marker;
     marker.header.frame_id = frame_id;
-    marker.header.stamp = this->now();
+    marker.header.stamp = timestamp;
     marker.ns = "obstacles";
     marker.id = id;
     marker.type = visualization_msgs::msg::Marker::CUBE;

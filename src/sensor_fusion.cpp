@@ -87,7 +87,7 @@ Eigen::MatrixXf SensorFusion::removeGroundPlane(const Eigen::MatrixXf& points) {
 
     // RANSAC参数
     const int max_iterations = 40;           // 稍微减少迭代次数以稳定耗时
-    const float distance_threshold = 0.05f;   // 点到平面距离阈值 (5cm)
+    const float distance_threshold = 0.10f;   // 点到平面距离阈值 (10cm) - 稍微放宽以适应路面起伏
     const int min_inliers = static_cast<int>(points.rows() * 0.3); // 至少30%的点是地面
     const float early_termination_threshold = 0.6f; // 如果找到覆盖60%点的平面，提前终止
     
@@ -500,9 +500,29 @@ Eigen::MatrixXf SensorFusion::extractLargestCluster(const Eigen::MatrixXf& point
 
     // 提取最大簇的点
     const std::vector<int>& largest_cluster = clusters[max_cluster_idx];
-    Eigen::MatrixXf cluster_points(largest_cluster.size(), 3);
-    for (size_t i = 0; i < largest_cluster.size(); ++i) {
-        cluster_points.row(i) = points.row(largest_cluster[i]);
+    
+    // 【优化】合并距离最大簇较近的其他簇，防止目标分裂
+    std::vector<int> merged_indices = largest_cluster;
+    Eigen::Vector3f largest_center = Eigen::Vector3f::Zero();
+    for (int idx : largest_cluster) largest_center += points.row(idx).transpose();
+    largest_center /= static_cast<float>(largest_cluster.size());
+
+    const float merge_dist_thresh = 0.8f; // 80cm 内的簇视为同一物体
+    for (size_t i = 0; i < clusters.size(); ++i) {
+        if (i == max_cluster_idx) continue;
+        
+        Eigen::Vector3f cluster_center = Eigen::Vector3f::Zero();
+        for (int idx : clusters[i]) cluster_center += points.row(idx).transpose();
+        cluster_center /= static_cast<float>(clusters[i].size());
+        
+        if ((cluster_center - largest_center).norm() < merge_dist_thresh) {
+            merged_indices.insert(merged_indices.end(), clusters[i].begin(), clusters[i].end());
+        }
+    }
+
+    Eigen::MatrixXf cluster_points(merged_indices.size(), 3);
+    for (size_t i = 0; i < merged_indices.size(); ++i) {
+        cluster_points.row(i) = points.row(merged_indices[i]);
     }
 
     return cluster_points;
@@ -523,12 +543,12 @@ void SensorFusion::adjustSizeByClass(float& length, float& width, float& height,
     // 对行人使用精确的人体尺寸约束（与Python版本一致）
     if (class_name == "person") {
         // 行人尺寸约束范围（基于真实人体数据）
-        // length = 胸厚: 18-26cm
-        // width = 肩宽: 36-52cm
+        // length = 肩宽: 36-52cm (PCA 较大水平维度)
+        // width = 胸厚: 18-26cm (PCA 较小水平维度)
         // height = 身高: 150-185cm
-        const float min_length = 0.18f, max_length = 0.26f;   // 胸厚
-        const float min_width = 0.36f, max_width = 0.52f;     // 肩宽
-        const float min_height = 1.50f, max_height = 1.85f;   // 身高
+        const float min_length = 0.36f, max_length = 0.60f;   // 肩宽 (略微放宽到 60cm)
+        const float min_width = 0.18f, max_width = 0.35f;     // 胸厚 (略微放宽到 35cm)
+        const float min_height = 1.50f, max_height = 1.90f;   // 身高
         
         // 硬性裁剪到物理合理范围
         length = std::clamp(length, min_length, max_length);
@@ -668,9 +688,12 @@ bool SensorFusion::estimate3DBBox(const Eigen::MatrixXf& points_3d,
     std::sort(eigen_pairs.rbegin(), eigen_pairs.rend());
 
     // PCA稳定性检查：特征值应该有明显的主方向
+    // 优化：对于不同类别使用不同的稳定性阈值
+    float min_eigen_ratio = (class_name == "person") ? 1.5f : 2.5f;
     float eigen_ratio = eigen_pairs[0].first / (eigen_pairs[2].first + 1e-6f);
-    if (eigen_ratio < 2.0f) {
-        // 点云分布太均匀，使用默认尺寸
+    
+    if (eigen_ratio < min_eigen_ratio) {
+        // 点云分布太均匀，无法可靠估计方向，使用默认尺寸和0偏航角
         auto it = default_sizes_.find(class_name);
         if (it != default_sizes_.end()) {
             bbox_3d.center = center;
@@ -748,6 +771,37 @@ bool SensorFusion::estimate3DBBox(const Eigen::MatrixXf& points_3d,
     // 根据类别调整尺寸
     adjustSizeByClass(length, width, height, class_name);
 
+    // 【关键优化】针对行人的质心稳定性处理
+    if (class_name == "person") {
+        // 1. 强制朝向锁定：行人的 PCA 朝向通常是噪声，初始化为 0，后续由 Tracker 根据速度估计
+        yaw = 0.0f; 
+        
+        // 2. 重新计算 AABB 以实现“精确包裹”
+        // 在 yaw=0 情况下，length 为 X 轴宽度（肩宽），width 为 Z 轴深度（胸厚）
+        float min_x = filtered_points.col(0).minCoeff();
+        float max_x = filtered_points.col(0).maxCoeff();
+        float min_y = filtered_points.col(1).minCoeff();
+        float max_y = filtered_points.col(1).maxCoeff();
+        float min_z = filtered_points.col(2).minCoeff();
+        float max_z = filtered_points.col(2).maxCoeff();
+
+        // 更新尺寸（使用 AABB 原始尺寸，稍后会被 adjustSizeByClass 约束）
+        length = max_x - min_x; // 肩宽方向
+        width = max_z - min_z;  // 胸厚方向
+        height = max_y - min_y; // 身高
+
+        // 再次调用约束，确保尺寸物理合理
+        adjustSizeByClass(length, width, height, class_name);
+
+        // 3. 质心对齐：确保框恰好包住点云
+        center(0) = (min_x + max_x) * 0.5f; // X轴居中
+        center(1) = max_y - height * 0.5f;  // Y轴锚定地面（max_y 是脚底）
+        center(2) = min_z + width * 0.5f;   // Z轴（深度）：从最前面的点向后偏移半个胸厚
+        
+        RCLCPP_DEBUG(rclcpp::get_logger("SensorFusion"), "Person Box wrapped: Center(%.2f, %.2f, %.2f), Size(%.2f, %.2f, %.2f)",
+                     center(0), center(1), center(2), length, width, height);
+    }
+
     // 填充结果
     bbox_3d.center = center;
     bbox_3d.size = Eigen::Vector3f(length, width, height);
@@ -792,10 +846,15 @@ std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
         Detection fused_det = det;
 
         // 3. 直接使用预投影的点进行框内筛选
-        const float x1 = det.bbox[0];
-        const float y1 = det.bbox[1];
-        const float x2 = det.bbox[2];
-        const float y2 = det.bbox[3];
+        // 【低成本优化】收缩 2D 框（各边收缩 5%），减少边缘背景点干扰
+        float bw = det.bbox[2] - det.bbox[0];
+        float bh = det.bbox[3] - det.bbox[1];
+        const float shrink_factor = 0.05f; // 每边收缩 5%
+        
+        const float x1 = det.bbox[0] + bw * shrink_factor;
+        const float y1 = det.bbox[1] + bh * shrink_factor;
+        const float x2 = det.bbox[2] - bw * shrink_factor;
+        const float y2 = det.bbox[3] - bh * shrink_factor;
 
         std::vector<int> box_indices;
         std::vector<float> box_depths;
@@ -822,9 +881,12 @@ std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
                              depths_sorted.end());
             float median_depth = depths_sorted[depths_sorted.size() / 2];
             
-            float depth_threshold = (median_depth < 2.5f) ? 0.8f : (median_depth < 4.0f ? 0.5f : 0.4f);
+            // 优化：根据距离动态调整深度阈值
+            // 【关键修改】放宽深度阈值，防止因运动导致的点云“拖尾”被切断
+            float depth_threshold = (median_depth < 3.0f) ? 1.2f : (median_depth < 6.0f ? 1.0f : 0.8f);
             
             std::vector<int> filtered_indices;
+            filtered_indices.reserve(box_indices.size());
             for (size_t i = 0; i < box_indices.size(); ++i) {
                 if (std::abs(box_depths[i] - median_depth) <= depth_threshold) {
                     filtered_indices.push_back(box_indices[i]);
@@ -833,9 +895,22 @@ std::vector<Detection> SensorFusion::fuseDetectionsWithLidar(
             
             if (filtered_indices.empty()) filtered_indices = box_indices;
 
-            points_in_box = Eigen::MatrixXf(filtered_indices.size(), 3);
+            // 提取初步过滤的点
+            Eigen::MatrixXf temp_points(filtered_indices.size(), 3);
             for (size_t i = 0; i < filtered_indices.size(); ++i) {
-                points_in_box.row(i) = points_camera.row(filtered_indices[i]);
+                temp_points.row(i) = points_camera.row(filtered_indices[i]);
+            }
+
+            // 优化：使用欧几里得聚类进一步去噪
+            // 【关键修改】增大聚类容差，防止目标分裂
+            float cluster_tolerance = 1.0f; // 进一步增加到 1.0m
+            if (det.class_name == "person") cluster_tolerance = 0.8f; 
+            
+            // 只有点数足够时才聚类，避免计算开销
+            if (temp_points.rows() >= min_points_in_box_) {
+                points_in_box = extractLargestCluster(temp_points, cluster_tolerance, min_points_in_box_);
+            } else {
+                points_in_box = temp_points;
             }
         }
 

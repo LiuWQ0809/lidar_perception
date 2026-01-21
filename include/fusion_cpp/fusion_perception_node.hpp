@@ -81,12 +81,12 @@ private:
 
     cv::Mat undistortImage(const cv::Mat& image, CameraContext& camera);
 
-    void publishObstacles(const std::vector<Detection>& tracked_objects);
+    void publishObstacles(const std::vector<Detection>& tracked_objects, const rclcpp::Time& timestamp);
     cv::Mat visualizeResults(const cv::Mat& image,
                              const std::vector<Detection>& detections_2d,
                              const std::vector<Detection>& tracked_objects);
     visualization_msgs::msg::Marker createBBoxMarker(
-        const Detection& obj, int id, const std::string& frame_id);
+        const Detection& obj, int id, const std::string& frame_id, const rclcpp::Time& timestamp);
     void enforceGroundConstraint(Detection& det) const;
     std::vector<Detection> suppressDuplicates(const std::vector<Detection>& detections);
 
