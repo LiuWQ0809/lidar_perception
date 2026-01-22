@@ -25,12 +25,16 @@ public:
 
     Eigen::VectorXf x;  // 状态向量 (10x1)
     Eigen::MatrixXf P;  // 协方差矩阵 (10x10)
-
-private:
-    Eigen::MatrixXf F_;  // 状态转移矩阵 (10x10)
     Eigen::MatrixXf H_;  // 测量矩阵 (7x10)
+    Eigen::MatrixXf F_;  // 状态转移矩阵 (10x10)
     Eigen::MatrixXf Q_;  // 过程噪声协方差 (10x10)
     Eigen::MatrixXf R_;  // 测量噪声协方差 (7x7)
+
+private:
+   // Eigen::MatrixXf F_;  // 状态转移矩阵 (10x10) <-- Moved to public
+   // Eigen::MatrixXf H_;  // 测量矩阵 (7x10) <-- Moved to public
+   // Eigen::MatrixXf Q_;  // 过程噪声协方差 (10x10) <-- Moved to public
+   // Eigen::MatrixXf R_;  // 测量噪声协方差 (7x7) <-- Moved to public
     Eigen::MatrixXf I_;  // 单位矩阵 (10x10)
 };
 
@@ -81,6 +85,11 @@ public:
     void reset();
 
 private:
+    /**
+     * @brief 检查跟踪是否超出感知范围
+     */
+    bool isTrackOutsideRange(const std::shared_ptr<Track>& track) const;
+
     /**
      * @brief 将检测与跟踪关联
      * @param detections 检测结果
@@ -143,6 +152,7 @@ private:
     float static_speed_thresh_;
     float smoothing_alpha_static_;
     float smoothing_alpha_dynamic_;
+    PerceptionRange range_;
 
     std::vector<std::shared_ptr<Track>> tracks_;
     int frame_count_;

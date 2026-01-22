@@ -24,7 +24,7 @@ sensors:
       calibration_size: [1920, 1536]
       undistort_size: [960, 768]
       projection_model: "pinhole"
-      enabled: true
+      enabled: false
 
     - name: "left"
       topic: "/cr/camera/bgr/left_960_768"

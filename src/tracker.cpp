@@ -33,20 +33,20 @@ KalmanFilter::KalmanFilter() : x(10), P(10, 10), F_(10, 10), H_(7, 10),
 
     // 过程噪声协方差（平衡平滑度与响应速度）
     Q_.setIdentity();
-    Q_ *= 0.005f;  // 极低的位置过程噪声，强制平滑
-    Q_.block<3, 3>(3, 3) *= 4.0f;  // 允许速度有一定变化 (0.02)
-    Q_.block<3, 3>(6, 6) *= 0.2f;  // 尺寸应该非常稳定
+    Q_ *= 0.1f;  // 增加过程噪声，提高响应速度，解决滞后问题
+    Q_.block<3, 3>(3, 3) *= 2.0f;  // 允许速度变化
+    Q_.block<3, 3>(6, 6) *= 0.01f; // 尺寸应该非常稳定
 
-    // 测量噪声协方差（增大以过滤观测抖动，特别是运动时的中心跳变）
+    // 测量噪声协方差（减小以信任Lidar观测，解决位置偏差）
     R_.setIdentity();
-    R_ *= 4.0f;  // 进一步显著增大测量噪声，更信任运动模型
-    R_.block<3, 3>(0, 0) *= 2.0f;  // 位置测量噪声 (8.0)
-    R_.block<3, 3>(3, 3) *= 2.0f;  // 尺寸测量噪声 (8.0)
-    R_(6, 6) = 2.0f;  // 角度测量噪声
+    R_ *= 0.1f;  // 显著减小测量噪声，更信任观测值 (Lidar)
+    R_.block<3, 3>(0, 0) *= 1.0f;  // 位置测量噪声 (0.1)
+    R_.block<3, 3>(3, 3) *= 10.0f; // 尺寸测量噪声 (1.0) - 尺寸还是需要稳定一些
+    R_(6, 6) = 0.5f;  // 角度测量噪声
 
     // 初始协方差
     P.setIdentity();
-    P *= 10.0f;
+    P *= 1.0f; // 初始不确定性减小
 
     // 单位矩阵
     I_.setIdentity();
@@ -169,15 +169,15 @@ void Track::update(const Detection& detection) {
 
     // 【关键优化】针对行人的运动学约束和朝向估计
     if (class_name == "person") {
-        // 1. 速度方向锁定朝向：行人运动时，朝向应趋向于速度方向
+        // 1. 速度方向锁定朝向：仅当速度显著时使用
         Eigen::Vector2f velocity(kf_.x(3), kf_.x(4));
-        if (velocity.norm() > 0.4f) { // 速度大于 0.4m/s 时更新朝向
+        float speed = velocity.norm();
+        if (speed > 1.0f) { // 提高阈值，防止低速时朝向乱跳
             float velocity_yaw = std::atan2(velocity(1), velocity(0));
-            // 将速度方向作为 yaw 的观测值，但给予较小的权重（通过增大 R 间接实现，或者直接平滑）
-            yaw = velocity_yaw;
-        } else {
-            // 静止时，保持上一时刻朝向，不接受测量更新
-            yaw = kf_.x(9);
+            (void)velocity_yaw; // Unused for now
+            // 观测Yaw也参与，但如果速度够快，速度Yaw更可靠（行人通常朝前走）
+            // 简单的加权融合
+             // yaw = velocity_yaw; // 取消强制覆盖，通过update融合
         }
         
         // 2. 物理限制：行人不可能有极高的加速度或速度
@@ -190,8 +190,57 @@ void Track::update(const Detection& detection) {
          size(0), size(1), size(2),
          yaw;
 
-    kf_.update(z);
+    // 【根本性优化】计算创新向量（残差）
+    Eigen::VectorXf innovation = z - kf_.H_ * kf_.x;
     
+    // 检查位置偏差
+    float pos_error = innovation.head<3>().norm();
+    
+    // 如果偏差过大（>0.5m），说明运动模型失效或目标由静止突变，直接重置状态
+    // 或者如果置信度非常高，也倾向于重置
+    if (pos_error > 0.5f || last_detection.confidence < 0.1f) {  // 第一次检测或偏差大
+        // 强制重置位置
+        kf_.x(0) = z(0);
+        kf_.x(1) = z(1);
+        kf_.x(2) = z(2);
+        
+        // 速度重置策略：
+        // 如果是突变，可能速度也变了。尝试用当前位移估算速度
+        // 但为了安全，如果是巨大的跳变，可能只是观测噪声？
+        // 鉴于用户反馈"滞后"，我们选择相信观测
+        
+        // 重置协方差 P，让滤波器重新收敛
+        // kf_.P 保持不变可能更好，或者稍微增大以适应不确定性
+    } else {
+        // 标准更新
+        kf_.update(z);
+    }
+    
+    // 强制把位置对齐到观测值（如果想要绝对跟随）
+    // 对于Lidar Perception，观测通常是准确的，我们希望显示的框紧贴点云
+    // 使用简单的互补滤波修正最终输出
+    float alpha_pos = 0.9f; // 90% 信任观测
+    kf_.x(0) = alpha_pos * z(0) + (1.0f - alpha_pos) * kf_.x(0);
+    kf_.x(1) = alpha_pos * z(1) + (1.0f - alpha_pos) * kf_.x(1);
+    kf_.x(2) = alpha_pos * z(2) + (1.0f - alpha_pos) * kf_.x(2);
+
+    // 尺寸也应该紧跟观测，因为每次观测都是基于当前点云的PCA
+    float alpha_size = 0.8f;
+    kf_.x(6) = alpha_size * z(3) + (1.0f - alpha_size) * kf_.x(6);
+    kf_.x(7) = alpha_size * z(4) + (1.0f - alpha_size) * kf_.x(7);
+    kf_.x(8) = alpha_size * z(5) + (1.0f - alpha_size) * kf_.x(8);
+
+    // Yaw角处理
+    // 只有当观测Yaw变化较小，或者速度明显时才平滑
+    // 否则直接信任观测（针对掉头情况）
+    // 这里我们简单地强跟随观测
+    float yaw_error = z(6) - kf_.x(9);
+    // 归一化角度差 [-pi, pi]
+    while (yaw_error > M_PI) yaw_error -= 2 * M_PI;
+    while (yaw_error < -M_PI) yaw_error += 2 * M_PI;
+    
+    kf_.x(9) += 0.8f * yaw_error; // 80% 跟随观测Yaw
+
     // 如果是行人，在更新后再次强化物理约束
     if (class_name == "person") {
         // 限制行人最大速度为 3m/s (约 10km/h)
@@ -246,6 +295,18 @@ MultiObjectTracker::MultiObjectTracker(const YAML::Node& config)
     smoothing_alpha_dynamic_ = tracking_config["smoothing_alpha_dynamic"]
         ? tracking_config["smoothing_alpha_dynamic"].as<float>()
         : 0.6f;
+
+    auto range_node = config["perception_range"];
+    if (range_node) {
+        range_.x_min = range_node["x_min"].as<float>();
+        range_.x_max = range_node["x_max"].as<float>();
+        range_.y_min = range_node["y_min"].as<float>();
+        range_.y_max = range_node["y_max"].as<float>();
+        range_.z_min = range_node["z_min"].as<float>();
+        range_.z_max = range_node["z_max"].as<float>();
+    } else {
+        range_ = {-5.0f, 20.0f, -5.0f, 5.0f, -2.0f, 5.0f}; 
+    }
 
     RCLCPP_INFO(rclcpp::get_logger("MultiObjectTracker"), 
                 "Multi-object tracker initialized");
@@ -304,6 +365,12 @@ std::vector<Detection> MultiObjectTracker::update(
     tracks_.erase(
         std::remove_if(tracks_.begin(), tracks_.end(),
             [this](const std::shared_ptr<Track>& t) {
+                // 如果未被更新（纯预测）且目标超出感知范围，则立即删除，解决"鬼影"问题
+                if (t->time_since_update > 0 && isTrackOutsideRange(t)) {
+                    last_smoothed_states_.erase(t->track_id);
+                    return true;
+                }
+
                 if (t->time_since_update >= max_age_) {
                     last_smoothed_states_.erase(t->track_id);
                     return true;
@@ -323,6 +390,21 @@ std::vector<Detection> MultiObjectTracker::update(
     }
 
     return tracked_objects;
+}
+
+bool MultiObjectTracker::isTrackOutsideRange(const std::shared_ptr<Track>& track) const {
+    const auto& x = track->kf_.x;
+    float cx = x(0);
+    float cy = x(1);
+    
+    // 给一点宽容度 (margin)，防止在边界处反复跳变
+    float margin = 0.5f; 
+    
+    if (cx < range_.x_min - margin || cx > range_.x_max + margin ||
+        cy < range_.y_min - margin || cy > range_.y_max + margin) {
+        return true;
+    }
+    return false;
 }
 
 void MultiObjectTracker::associateDetectionsToTracks(
