@@ -92,7 +92,22 @@ dpkg -l | grep TensorRT
 # 如果未安装，请从 NVIDIA 官网下载对应版本
 ```
 
-### 3. 编译项目
+### 3. （可选）生成 TensorRT Engine
+
+如果使用 TensorRT 后端，需要先将 ONNX 转为 engine 文件：
+
+```bash
+cd /home/nvidia/workspaces/perception/lidar_perception
+./scripts/build_trt_engine.sh \
+  --onnx models/yolov8n.onnx \
+  --engine models/yolov8n_fp16.engine \
+  --input-size 640 \
+  --fp16
+```
+
+脚本会自动查找 `trtexec`（优先 PATH，其次 `/usr/src/tensorrt/bin/trtexec`）。
+
+### 4. 编译项目
 
 ```bash
 cd /home/nvidia/liuwq/fusion_cpp

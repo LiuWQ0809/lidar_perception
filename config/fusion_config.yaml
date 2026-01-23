@@ -7,7 +7,7 @@ sensors:
 
   cameras:
     - name: "front_left"
-      topic: "/cr/camera/bgr/front_left_960_768"
+      topic: "/cr/camera/bgr/front_960_768"
       encoding: "bgr8"
       image_size: [960, 768]
       calibration: "calibration/front_left.yaml"
