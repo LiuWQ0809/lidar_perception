@@ -10,7 +10,7 @@ sensors:
       topic: "/cr/camera/bgr/front_960_768"
       encoding: "bgr8"
       image_size: [960, 768]
-      calibration: "calibration/front_left.yaml"
+      calibration: "calibration/front.yaml"
       calibration_size: [1920, 1536]
       undistort_size: [960, 768]
       projection_model: "pinhole"
