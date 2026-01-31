@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fusion Web Visualizer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">FV</div>
+        <div>
+          <div class="title">Fusion Web Visualizer</div>
+          <div class="subtitle">Multi-sensor perception live view</div>
+        </div>
+      </div>
+      <div class="status" id="status-pill">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">connecting</span>
+      </div>
+    </header>
+
+    <section class="content">
+      <div class="left">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Camera Stream</h2>
+              <p id="camera-meta">--</p>
+            </div>
+            <div class="controls">
+              <label>
+                Camera
+                <select id="camera-select"></select>
+              </label>
+            </div>
+          </div>
+          <div class="video-shell">
+            <img id="mjpeg" alt="camera stream" />
+          </div>
+        </div>
+
+        <div class="panel metrics">
+          <div>
+            <span class="label">Image FPS</span>
+            <span class="value" id="image-fps">0</span>
+          </div>
+          <div>
+            <span class="label">Image Age</span>
+            <span class="value" id="image-age">--</span>
+          </div>
+          <div>
+            <span class="label">Markers</span>
+            <span class="value" id="marker-count">0</span>
+          </div>
+          <div>
+            <span class="label">Marker FPS</span>
+            <span class="value" id="marker-fps">0</span>
+          </div>
+          <div>
+            <span class="label">Marker Age</span>
+            <span class="value" id="marker-age">--</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2>Birdseye Map</h2>
+              <p id="map-meta">Perception range</p>
+            </div>
+            <div class="controls">
+              <button id="fit-map" class="ghost">Fit</button>
+              <button id="toggle-grid" class="ghost">Grid</button>
+            </div>
+          </div>
+          <div class="map-shell">
+            <canvas id="map-canvas" width="600" height="600"></canvas>
+          </div>
+          <div class="legend">
+            <div><span class="pill red"></span>person</div>
+            <div><span class="pill green"></span>car</div>
+            <div><span class="pill blue"></span>other</div>
+          </div>
+        </div>
+
+        <div class="panel list">
+          <div class="panel-header">
+            <div>
+              <h2>Objects</h2>
+              <p id="list-meta">--</p>
+            </div>
+            <div class="controls">
+              <button id="toggle-sort" class="ghost">Sort: distance</button>
+            </div>
+          </div>
+          <div id="object-list" class="object-list"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/visualizer.js"></script>
+</body>
+</html>

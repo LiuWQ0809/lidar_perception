@@ -6,7 +6,7 @@ sensors:
     topic: "/iv_points"
 
   cameras:
-    - name: "front_left"
+    - name: "front"
       topic: "/cr/camera/bgr/front_960_768"
       encoding: "bgr8"
       image_size: [960, 768]
